@@ -1,0 +1,90 @@
+services:
+  - type: web
+    name: secure-llama-api
+    env: python
+    plan: starter
+    buildCommand: |
+      pip install -r requirements-api.txt
+      python scripts/bootstrap_runtime.py
+    startCommand: |
+      python -m uvicorn api_service:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: APP_API_KEY
+        generateValue: true
+      - key: APP_CLIENT_SECRET
+        generateValue: true
+      - key: LLAMA_INTERNAL_API_KEY
+        generateValue: true
+      - key: LLAMA_SERVER_PATH
+        value: bin/llama-cpp/llama-server
+      - key: LLAMA_HF_REPO
+        value: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+      - key: LLAMA_HF_FILE
+        value: qwen2.5-0.5b-instruct-q4_k_m.gguf
+      - key: SYSTEM_PROMPT_FILE
+        value: prompts/system_prompt.txt
+      - key: LLAMA_CTX
+        value: 4096
+      - key: LLAMA_THREADS
+        value: 4
+      - key: MAX_INPUT_CHARS
+        value: 2000
+      - key: MAX_OUTPUT_TOKENS
+        value: 96
+      - key: DEFAULT_REPEAT_PENALTY
+        value: 1.25
+      - key: RATE_LIMIT_RPM
+        value: 60
+      - key: RATE_LIMIT_BURST
+        value: 20
+      - key: ENABLE_WEB_FALLBACK
+        value: 1
+      - key: WEB_LOOKUP_FOR_FACTS
+        value: 1
+      - key: WEB_LOOKUP_TIMEOUT_SECONDS
+        value: 12
+      - key: WEB_CACHE_MAX_ITEMS
+        value: 800
+      - key: ENABLE_RELATIONSHIP_LEARNING
+        value: 1
+      - key: RELATIONSHIP_BRIDGE_MODE
+        value: 1
+      - key: RELATIONSHIP_LEARNING_ON_CHAT
+        value: 0
+      - key: RELATIONSHIP_KB_PATH
+        value: knowledge_relationship.json
+      - key: RELATIONSHIP_KB_MAX_ITEMS
+        value: 5000
+      - key: RELATIONSHIP_LEARNING_TIMEOUT_SECONDS
+        value: 14
+      - key: ENABLE_LIMITS_GUARDRAILS
+        value: 1
+      - key: LIMITS_LEARNING_ON_CHAT
+        value: 0
+      - key: LIMITS_KB_PATH
+        value: knowledge_limits.json
+      - key: LIMITS_KB_MAX_ITEMS
+        value: 2500
+      - key: LIMITS_LEARNING_TIMEOUT_SECONDS
+        value: 14
+      - key: ENABLE_BACKGROUND_LEARNING
+        value: 1
+      - key: BACKGROUND_LEARNING_SLEEP_MINUTES
+        value: 180
+      - key: BACKGROUND_RELATIONSHIP_COUNT
+        value: 24
+      - key: BACKGROUND_LIMITS_COUNT
+        value: 12
+      - key: ENABLE_LONG_TERM_MEMORY
+        value: 1
+      - key: MEMORY_STORE_PATH
+        value: memory_store.json
+      - key: MEMORY_STORE_MAX_USERS
+        value: 2000
+      - key: MEMORY_STORE_MAX_ITEMS_PER_USER
+        value: 160
+      - key: MEMORY_STORE_READ_ITEMS
+        value: 10
+      - key: MEMORY_STORE_WRITE_ITEMS
+        value: 4

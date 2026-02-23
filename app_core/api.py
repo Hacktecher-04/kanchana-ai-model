@@ -1,0 +1,828 @@
+﻿from __future__ import annotations
+
+import asyncio
+import atexit
+import hmac
+import re
+from typing import Any, Optional
+
+import httpx
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.responses import PlainTextResponse
+
+from .conversation import (
+    _build_memory_summary,
+    _detect_language_mode,
+    _direct_intent_reply,
+    _explicit_en_switch,
+    _explicit_hi_switch,
+    _hindi_fallback_by_intent,
+    _human_response_hint,
+    _intent_hint,
+    _is_hi_smalltalk,
+    _looks_informational_question,
+    _needs_intent_fallback,
+    _postprocess_reply,
+    _safe_fallback,
+    _score_reply,
+    _looks_prompt_override,
+)
+from .runtime import LlamaServerManager, TokenBucketLimiter
+from .schemas import ChatRequest, ChatResponse, ClientContext
+from .settings import load_settings, read_text
+from .background_learning import run_background_learning_loop
+from .limits_learning import (
+    detect_high_risk_category,
+    get_limits_answer,
+    learn_limits_answer,
+    safety_notice_for_category,
+)
+from .relationship_learning import (
+    get_relationship_answer,
+    is_relationship_query,
+    learn_relationship_answer,
+    should_try_relationship_learning,
+)
+from .web_lookup import put_cached_answer, should_try_web_lookup, web_answer
+from .memory_store import add_long_memories, get_long_memories, pick_memory_key
+
+
+settings = load_settings()
+system_prompt_default = read_text(settings.system_prompt_file)
+limiter = TokenBucketLimiter(
+    rate_per_minute=settings.rate_limit_rpm, burst=settings.rate_limit_burst
+)
+manager = LlamaServerManager(settings)
+_background_learning_task: Optional[asyncio.Task[Any]] = None
+_background_learning_stop_event: Optional[asyncio.Event] = None
+
+app = FastAPI(title="Secure Local LLM API", version="1.0.0")
+
+
+def _auth_and_rate_limit(
+    request: Request,
+    x_api_key: str = Header(default=""),
+    x_client_secret: str = Header(default="", alias="x-client-secret"),
+) -> str:
+    if not hmac.compare_digest(x_api_key or "", settings.app_api_key):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if not hmac.compare_digest(x_client_secret or "", settings.app_client_secret):
+        raise HTTPException(status_code=401, detail="Invalid client secret")
+
+    ip = request.client.host if request.client else "unknown"
+    rate_key = f"{ip}:{x_api_key}:{x_client_secret}"
+    allowed, retry_after = limiter.allow(rate_key)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded. Retry after {retry_after:.1f}s",
+        )
+    return x_api_key
+
+
+def _pick_variant(options: list[str], key: str) -> str:
+    if not options:
+        return ""
+    idx = sum(ord(c) for c in (key or "")) % len(options)
+    return options[idx]
+
+
+def _relationship_bridge_line(user_msg: str, lang_mode: str) -> str:
+    low = (user_msg or "").lower()
+    if lang_mode == "hi":
+        if re.search(r"\b(code|coding|python|javascript|api|bug|error|fix|deploy)\b", low):
+            return _pick_variant(
+                [
+                    "Isi tarah relationship me bhi clarity aur consistency sabse jaldi trust banati hai.",
+                    "Yahi principle relationship me bhi kaam karta hai: clear signals + consistent actions.",
+                    "Jaisa tech me predictable behavior important hai, waise hi relationship me reliable behavior.",
+                ],
+                low,
+            )
+        if re.search(r"\b(job|career|study|exam|skills|work|business|startup)\b", low):
+            return _pick_variant(
+                [
+                    "Relationship side par bhi same rule rakho: effort visible rakho aur communication clean rakho.",
+                    "Career ki tarah relationship me bhi long-term result consistency se aata hai.",
+                    "Yeh approach personal goals ke saath relationship stability me bhi help karti hai.",
+                ],
+                low,
+            )
+        if re.search(r"\b(health|sleep|stress|anxiety|mind|routine|diet)\b", low):
+            return _pick_variant(
+                [
+                    "Emotional relationship health bhi daily routine aur honest conversation se hi strong hoti hai.",
+                    "Jaisa body ko routine chahiye, relationship ko bhi regular emotional check-ins chahiye.",
+                    "Self-care stable ho to relationship me reactions bhi balanced rehte hain.",
+                ],
+                low,
+            )
+        return _pick_variant(
+            [
+                "Aur relationship angle se dekho to clear communication + respect har context me kaam karta hai.",
+                "Isko relationship context me lao to base same hai: trust, timing, aur seedhi baat.",
+                "Human connection me bhi yahi formula strong hai: clarity rakho, assumptions kam karo.",
+            ],
+            low,
+        )
+    if re.search(r"\b(code|coding|python|javascript|api|bug|error|fix|deploy)\b", low):
+        return _pick_variant(
+            [
+                "The same relationship rule applies here too: clarity and consistency build trust fastest.",
+                "This maps well to relationships as well: clear signals plus steady actions.",
+                "Like reliable systems, relationships also improve with predictable and honest behavior.",
+            ],
+            low,
+        )
+    if re.search(r"\b(job|career|study|exam|skills|work|business|startup)\b", low):
+        return _pick_variant(
+            [
+                "The same carries into relationships: visible effort and clear communication matter most.",
+                "Like career growth, relationship stability also comes from consistency over time.",
+                "This approach helps in work goals and in maintaining healthy relationship dynamics.",
+            ],
+            low,
+        )
+    if re.search(r"\b(health|sleep|stress|anxiety|mind|routine|diet)\b", low):
+        return _pick_variant(
+            [
+                "This also helps relationships because emotional stability improves communication quality.",
+                "Just like health habits, relationships improve with regular check-ins and balance.",
+                "Personal stability usually reflects as better emotional behavior in relationships too.",
+            ],
+            low,
+        )
+    return _pick_variant(
+        [
+            "From a relationship lens, the same core pattern is clear communication and mutual respect.",
+            "In relationship terms, this works best when trust and timing are handled intentionally.",
+            "For human connection, the same principle applies: reduce assumptions and stay clear.",
+        ],
+        low,
+    )
+
+
+def _apply_relationship_bridge(user_msg: str, reply: str, lang_mode: str) -> str:
+    if not settings.relationship_bridge_mode:
+        return reply
+    msg = (user_msg or "").strip()
+    out = (reply or "").strip()
+    if not msg or not out:
+        return reply
+    if is_relationship_query(msg):
+        return out
+    if detect_high_risk_category(msg):
+        return out
+
+    low_m = msg.lower()
+    low_r = out.lower()
+    is_question = "?" in low_m or bool(
+        re.search(
+            r"\b(kya|kaise|kyu|kyun|kab|kahan|kaun|what|how|why|when|where|who|which|can|should)\b",
+            low_m,
+        )
+    )
+    if not is_question:
+        return out
+    if len(low_m.split()) <= 3 and re.search(r"\b(hi|hello|hey|ok|okay|thanks|thank you)\b", low_m):
+        return out
+    if _explicit_hi_switch(msg) or _explicit_en_switch(msg):
+        return out
+    if re.search(r"\b(relationship|couple|dating|trust|communication|partner|love|pyar|pyaar)\b", low_r):
+        return out
+
+    bridge = _relationship_bridge_line(msg, lang_mode).strip()
+    if not bridge:
+        return out
+    final_text = f"{out} {bridge}".strip()
+    words = final_text.split()
+    if len(words) > 90:
+        final_text = " ".join(words[:90]).strip()
+    return final_text
+
+
+def _compact_line(text: str, *, limit: int) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return ""
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit].strip()
+    return cleaned
+
+
+def _dedupe_lines(lines: list[str], *, max_items: int, max_len: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in lines:
+        line = _compact_line(raw, limit=max_len)
+        if not line:
+            continue
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _build_external_context(
+    context: ClientContext,
+    *,
+    lang_mode: str,
+    long_memories: list[str],
+) -> str:
+    parts: list[str] = []
+
+    model_name = _compact_line(context.model_name or "", limit=120)
+    if model_name:
+        parts.append(f"Client model name: {model_name}")
+
+    behavior = _compact_line(context.behavior_profile or "", limit=1200)
+    if behavior:
+        parts.append(f"Client behavior profile: {behavior}")
+
+    prebuilt = _compact_line(context.prebuilt_prompt or "", limit=3200)
+    if prebuilt:
+        parts.append(f"Client prebuilt prompt: {prebuilt}")
+
+    mem_short = _dedupe_lines(
+        list(context.memory_short or []),
+        max_items=8,
+        max_len=180,
+    )
+    if mem_short:
+        parts.append("Client short-term memory: " + " | ".join(mem_short))
+
+    combined_long = _dedupe_lines(
+        [*(context.memory_long or []), *long_memories],
+        max_items=12,
+        max_len=200,
+    )
+    if combined_long:
+        parts.append("Client long-term memory: " + " | ".join(combined_long))
+
+    if not parts:
+        return ""
+    if lang_mode == "hi":
+        return (
+            "Client context aaya hai; answer user ke sawal ke exact intent ke hisab se do. "
+            + " ".join(parts)
+        )
+    return (
+        "Client context is provided; answer exactly to user intent while respecting it. "
+        + " ".join(parts)
+    )
+
+
+def _prepare_memory_write_lines(
+    msg: str,
+    context: ClientContext,
+) -> list[str]:
+    lines: list[str] = []
+    clean_msg = _compact_line(msg, limit=260)
+    if clean_msg and len(clean_msg.split()) >= 4 and not _looks_prompt_override(clean_msg):
+        lines.append(clean_msg)
+    lines.extend([_compact_line(x, limit=220) for x in (context.memory_short or [])])
+    lines.extend([_compact_line(x, limit=220) for x in (context.memory_long or [])])
+    return [x for x in lines if x]
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    global _background_learning_task, _background_learning_stop_event
+    await manager.start()
+    if settings.enable_background_learning:
+        _background_learning_stop_event = asyncio.Event()
+        _background_learning_task = asyncio.create_task(
+            run_background_learning_loop(
+                settings,
+                stop_event=_background_learning_stop_event,
+            ),
+            name="background-learning-loop",
+        )
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    global _background_learning_task, _background_learning_stop_event
+    if _background_learning_stop_event is not None:
+        _background_learning_stop_event.set()
+    if _background_learning_task is not None:
+        try:
+            await asyncio.wait_for(_background_learning_task, timeout=8)
+        except TimeoutError:
+            _background_learning_task.cancel()
+        except Exception:
+            pass
+        finally:
+            _background_learning_task = None
+            _background_learning_stop_event = None
+    await manager.stop()
+    await manager.close()
+
+
+@atexit.register
+def _cleanup() -> None:
+    # Fallback cleanup if process exits without FastAPI shutdown event.
+    proc = manager.process
+    if proc is not None and proc.poll() is None:
+        proc.kill()
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/v1/chat", response_model=ChatResponse)
+async def chat(
+    payload: ChatRequest,
+    _: str = Depends(_auth_and_rate_limit),
+) -> ChatResponse:
+    msg = payload.message.strip()
+    if len(msg) > settings.max_input_chars:
+        raise HTTPException(
+            status_code=413,
+            detail=f"message exceeds MAX_INPUT_CHARS={settings.max_input_chars}",
+        )
+
+    sys_prompt = (payload.system_prompt or system_prompt_default).strip()
+    if not sys_prompt:
+        raise HTTPException(status_code=400, detail="system prompt is empty")
+
+    context = payload.context or ClientContext()
+    memory_key = pick_memory_key(context.user_id, context.session_id)
+
+    history_user_turns = max(6, min(settings.history_user_turns, 120))
+    history_window_items = history_user_turns * 2
+    recent_history = payload.history[-history_window_items:]
+
+    last_assistant = ""
+    for item in reversed(recent_history):
+        if item.role != "assistant":
+            continue
+        content = item.content.strip()
+        if content:
+            last_assistant = content
+            break
+
+    lang_mode = _detect_language_mode(msg, recent_history)
+    lang_rule = (
+        "Reply only in simple Roman Hindi using ASCII letters; do not use Devanagari script."
+        if lang_mode == "hi"
+        else "Reply only in clear English."
+    )
+    intent_hint = _intent_hint(msg, lang_mode)
+    human_hint = _human_response_hint(msg, lang_mode)
+
+    stored_long_memories: list[str] = []
+    if settings.enable_long_term_memory and memory_key:
+        stored_long_memories = get_long_memories(
+            settings.memory_store_path,
+            memory_key,
+            query=msg,
+            read_items=max(1, settings.memory_store_read_items),
+        )
+    external_context = _build_external_context(
+        context,
+        lang_mode=lang_mode,
+        long_memories=stored_long_memories,
+    )
+
+    memory_summary = _build_memory_summary(
+        recent_history,
+        max_user_turns=history_user_turns,
+        max_items=max(3, min(settings.memory_summary_items, 20)),
+    )
+
+    def _store_turn_memory() -> None:
+        if not settings.enable_long_term_memory:
+            return
+        if not memory_key:
+            return
+        lines = _prepare_memory_write_lines(msg, context)
+        if not lines:
+            return
+        add_long_memories(
+            settings.memory_store_path,
+            memory_key,
+            lines=lines[: max(1, settings.memory_store_write_items)],
+            max_users=max(20, settings.memory_store_max_users),
+            max_items_per_user=max(10, settings.memory_store_max_items_per_user),
+        )
+
+    if settings.enable_limits_guardrails:
+        risk_category = detect_high_risk_category(msg)
+        if risk_category:
+            limits_reply, _limits_source = get_limits_answer(
+                msg,
+                lang_mode,
+                kb_path=settings.limits_kb_path,
+                min_score=0.52,
+            )
+            if (not limits_reply) and settings.limits_learning_on_chat:
+                try:
+                    limits_reply, _limits_source, _is_new = await learn_limits_answer(
+                        msg,
+                        lang_mode,
+                        kb_path=settings.limits_kb_path,
+                        timeout_seconds=settings.limits_learning_timeout_seconds,
+                        max_items=max(200, settings.limits_kb_max_items),
+                        exact_cache_only=True,
+                    )
+                except Exception:
+                    limits_reply = ""
+            notice = safety_notice_for_category(risk_category, lang_mode)
+            if limits_reply and notice:
+                final_limits = f"{limits_reply} {notice}".strip()
+            elif limits_reply:
+                final_limits = limits_reply
+            elif notice:
+                final_limits = notice
+            else:
+                final_limits = _safe_fallback(lang_mode, msg, last_assistant)
+            _store_turn_memory()
+            return ChatResponse(
+                reply=final_limits,
+                model="safety-limits-kb",
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+            )
+
+    if _looks_prompt_override(msg):
+        lock_reply = (
+            "Bhai, yeh prompt-style instructions hain. Normal short message bhejo, main natural reply dunga."
+            if lang_mode == "hi"
+            else "That looks like prompt-style instructions. Send a normal short message and I will reply naturally."
+        )
+        _store_turn_memory()
+        return ChatResponse(
+            reply=lock_reply,
+            model="guardrail-prompt-lock",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+
+    # Deterministic handling for explicit language-switch commands.
+    if _explicit_hi_switch(msg):
+        _store_turn_memory()
+        return ChatResponse(
+            reply=_safe_fallback("hi", msg, last_assistant),
+            model="guardrail-language-switch",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+    if _explicit_en_switch(msg):
+        _store_turn_memory()
+        return ChatResponse(
+            reply=_safe_fallback("en", msg, last_assistant),
+            model="guardrail-language-switch",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+    if lang_mode == "hi" and len(msg.split()) <= 12 and _is_hi_smalltalk(msg):
+        hi_reply = _hindi_fallback_by_intent(msg, last_assistant)
+        hi_reply = _apply_relationship_bridge(msg, hi_reply, lang_mode)
+        _store_turn_memory()
+        return ChatResponse(
+            reply=hi_reply,
+            model="guardrail-hi-fast",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+    direct_reply = _direct_intent_reply(msg, lang_mode, last_assistant)
+    if direct_reply and (not _looks_informational_question(msg)):
+        direct_reply = _apply_relationship_bridge(msg, direct_reply, lang_mode)
+        _store_turn_memory()
+        return ChatResponse(
+            reply=direct_reply,
+            model="guardrail-direct-intent",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+
+    if settings.enable_relationship_learning and is_relationship_query(msg):
+        cached_rel, _cached_src = get_relationship_answer(
+            msg,
+            lang_mode,
+            kb_path=settings.relationship_kb_path,
+            min_score=0.55,
+        )
+        if cached_rel:
+            _store_turn_memory()
+            return ChatResponse(
+                reply=cached_rel,
+                model="relationship-kb",
+                prompt_tokens=None,
+                completion_tokens=None,
+                total_tokens=None,
+            )
+        if settings.relationship_learning_on_chat:
+            try:
+                rel_reply, _rel_source, rel_new = await learn_relationship_answer(
+                    msg,
+                    lang_mode,
+                    kb_path=settings.relationship_kb_path,
+                    timeout_seconds=settings.relationship_learning_timeout_seconds,
+                    max_items=max(200, settings.relationship_kb_max_items),
+                    exact_cache_only=True,
+                )
+            except Exception:
+                rel_reply, rel_new = "", False
+            if rel_reply:
+                _store_turn_memory()
+                return ChatResponse(
+                    reply=rel_reply,
+                    model="relationship-kb-web" if rel_new else "relationship-kb",
+                    prompt_tokens=None,
+                    completion_tokens=None,
+                    total_tokens=None,
+                )
+
+    # Keep only user history to avoid feeding back low-quality assistant generations.
+    sanitized_history: list[dict[str, str]] = []
+    for item in recent_history:
+        if item.role != "user":
+            continue
+        content = item.content.strip()
+        if not content:
+            continue
+        if sanitized_history and sanitized_history[-1]["content"].lower() == content.lower():
+            continue
+        sanitized_history.append({"role": "user", "content": content})
+
+    max_tokens = payload.max_tokens or settings.max_output_tokens
+    temperature = payload.temperature
+    if temperature is None:
+        temperature = settings.default_temperature
+    top_p = payload.top_p
+    if top_p is None:
+        top_p = settings.default_top_p
+    repeat_penalty = payload.repeat_penalty
+    if repeat_penalty is None:
+        repeat_penalty = settings.default_repeat_penalty
+
+    async def _infer(
+        infer_messages: list[dict[str, str]],
+        infer_temp: float,
+        infer_top_p: float,
+    ) -> dict[str, Any]:
+        return await manager.chat(
+            infer_messages,
+            max_tokens=max_tokens,
+            temperature=infer_temp,
+            top_p=infer_top_p,
+            repeat_penalty=repeat_penalty,
+        )
+
+    checkpoint_instructions = [
+        "Answer with substance and clarity; use 1-2 sentences for simple asks, otherwise 2-5 concise sentences.",
+        "Correction checkpoint: remove generic filler, vague phrasing, and any assistant/helpdesk tone.",
+        "Validation checkpoint: follow language rule and user intent; keep answer natural, specific, and useful.",
+        "Final checkpoint: output one clean, natural answer only.",
+    ]
+    temp_schedule = [temperature, min(temperature, 0.56), 0.48, 0.40]
+    top_p_schedule = [top_p, min(top_p, 0.82), 0.78, 0.74]
+    checkpoint_count = max(1, min(settings.response_checkpoints, 4))
+    low_msg = msg.lower()
+    is_complex = bool(
+        re.search(
+            r"\b(problem|issue|error|fix|not working|bug|explain|solution|steps|how to|kyo|kyon|kyu)\b",
+            low_msg,
+        )
+    )
+    fast_mode = len(msg.split()) <= 10 and not is_complex
+    if fast_mode:
+        checkpoint_count = 1 if lang_mode == "hi" else min(checkpoint_count, 2)
+
+    best_reply = ""
+    best_score = -10_000
+    best_raw: dict[str, Any] = {}
+    last_http_error: Optional[Exception] = None
+
+    for i in range(checkpoint_count):
+        control = checkpoint_instructions[i]
+        infer_messages: list[dict[str, str]] = [
+            {"role": "system", "content": sys_prompt},
+            {
+                "role": "system",
+                "content": (
+                    f"{lang_rule} Keep response natural, short, and specific. "
+                    f"{control} {intent_hint} {human_hint}"
+                ),
+            },
+        ]
+        if external_context:
+            infer_messages.append(
+                {
+                    "role": "system",
+                    "content": external_context,
+                }
+            )
+        if memory_summary:
+            infer_messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"Conversation memory: {memory_summary} "
+                        "Use this subtly for continuity. Do not repeat it verbatim."
+                    ),
+                }
+            )
+        infer_messages.extend([*sanitized_history, {"role": "user", "content": msg}])
+
+        try:
+            raw_i = await _infer(
+                infer_messages,
+                infer_temp=temp_schedule[i],
+                infer_top_p=top_p_schedule[i],
+            )
+        except httpx.HTTPStatusError as exc:
+            last_http_error = exc
+            continue
+        except httpx.HTTPError as exc:
+            last_http_error = exc
+            continue
+
+        choice_i = raw_i.get("choices", [{}])[0]
+        msg_i = choice_i.get("message", {})
+        reply_i = _postprocess_reply(
+            str(msg_i.get("content", "")),
+            msg,
+            lang_mode,
+            last_assistant,
+        )
+        score_i = _score_reply(reply_i, msg, lang_mode)
+
+        if score_i > best_score:
+            best_score = score_i
+            best_reply = reply_i
+            best_raw = raw_i
+
+        # Good enough candidate found, stop early.
+        if score_i >= 25:
+            break
+
+    # Repair pass: rewrite the best draft when it is not yet strong.
+    if (not fast_mode) and best_reply and best_score < 32:
+        repair_messages: list[dict[str, str]] = [
+            {"role": "system", "content": sys_prompt},
+            {
+                "role": "system",
+                "content": (
+                    f"{lang_rule} Rewrite the draft to best answer the user clearly and naturally. "
+                    "Use 1-2 sentences if simple; otherwise 2-5 concise sentences. No vague filler."
+                ),
+            },
+        ]
+        if external_context:
+            repair_messages.append(
+                {
+                    "role": "system",
+                    "content": external_context,
+                }
+            )
+        if memory_summary:
+            repair_messages.append(
+                {
+                    "role": "system",
+                    "content": (
+                        f"Conversation memory: {memory_summary} "
+                        "Use continuity naturally, without meta mention."
+                    ),
+                }
+            )
+        repair_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"User message: {msg}\n"
+                    f"Draft reply: {best_reply}\n"
+                    "Rewrite a better final answer:"
+                ),
+            }
+        )
+        try:
+            raw_r = await _infer(
+                repair_messages,
+                infer_temp=min(temperature, 0.38),
+                infer_top_p=min(top_p, 0.72),
+            )
+            choice_r = raw_r.get("choices", [{}])[0]
+            msg_r = choice_r.get("message", {})
+            reply_r = _postprocess_reply(
+                str(msg_r.get("content", "")),
+                msg,
+                lang_mode,
+                last_assistant,
+            )
+            score_r = _score_reply(reply_r, msg, lang_mode)
+            if score_r > best_score:
+                best_score = score_r
+                best_reply = reply_r
+                best_raw = raw_r
+        except httpx.HTTPError:
+            pass
+
+    if not best_reply:
+        if isinstance(last_http_error, httpx.HTTPStatusError):
+            raise HTTPException(
+                status_code=502,
+                detail=f"llama-server returned {last_http_error.response.status_code}",
+            ) from last_http_error
+        if last_http_error is not None:
+            raise HTTPException(status_code=502, detail="llama-server unreachable") from last_http_error
+        best_reply = _safe_fallback(lang_mode, msg, last_assistant)
+
+    if best_score < 14 or _needs_intent_fallback(msg, best_reply, best_score):
+        best_reply = _safe_fallback(lang_mode, msg, last_assistant)
+        best_score = _score_reply(best_reply, msg, lang_mode)
+    if (
+        last_assistant
+        and best_reply.strip().lower() == last_assistant.strip().lower()
+    ):
+        best_reply = _safe_fallback(lang_mode, msg, last_assistant)
+        best_score = _score_reply(best_reply, msg, lang_mode)
+
+    if (
+        settings.enable_relationship_learning
+        and settings.relationship_learning_on_chat
+        and should_try_relationship_learning(msg, best_reply, best_score)
+    ):
+        try:
+            rel_reply, rel_source, rel_new = await learn_relationship_answer(
+                msg,
+                lang_mode,
+                kb_path=settings.relationship_kb_path,
+                timeout_seconds=settings.relationship_learning_timeout_seconds,
+                max_items=max(200, settings.relationship_kb_max_items),
+            )
+        except Exception:
+            rel_reply, rel_source, rel_new = "", "", False
+        if rel_reply:
+            best_reply = rel_reply
+            best_raw = {
+                "model": "relationship-kb-web" if rel_new else "relationship-kb",
+                "usage": {"source": rel_source},
+            }
+
+    if (
+        settings.enable_web_fallback
+        and (not is_relationship_query(msg))
+        and should_try_web_lookup(
+            msg,
+            best_reply,
+            best_score,
+            always_for_facts=settings.web_lookup_for_facts,
+        )
+    ):
+        try:
+            web_reply, web_source = await web_answer(
+                msg,
+                lang_mode,
+                timeout_seconds=settings.web_lookup_timeout_seconds,
+            )
+        except Exception:
+            web_reply, web_source = "", ""
+        if web_reply:
+            best_reply = web_reply
+            best_raw = {
+                "model": "web-fallback",
+                "usage": {},
+            }
+            put_cached_answer(
+                msg,
+                web_reply,
+                web_source,
+                max_items=max(50, settings.web_cache_max_items),
+            )
+
+    best_reply = _apply_relationship_bridge(msg, best_reply, lang_mode)
+    _store_turn_memory()
+    usage = best_raw.get("usage", {})
+
+    return ChatResponse(
+        reply=best_reply or "...",
+        model=best_raw.get("model"),
+        prompt_tokens=usage.get("prompt_tokens"),
+        completion_tokens=usage.get("completion_tokens"),
+        total_tokens=usage.get("total_tokens"),
+    )
+
+
+@app.post("/v1/chat-text", response_class=PlainTextResponse)
+async def chat_text(
+    payload: ChatRequest,
+    _: str = Depends(_auth_and_rate_limit),
+) -> str:
+    response = await chat(payload)
+    return response.reply
+
