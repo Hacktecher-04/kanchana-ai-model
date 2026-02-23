@@ -56,14 +56,62 @@ class LlamaServerManager:
         self._stdout_log_file = None
         self._stderr_log_file = None
 
-    def _build_command(self) -> list[str]:
-        if not self.settings.llama_server_path.exists():
-            raise FileNotFoundError(
-                f"llama-server not found: {self.settings.llama_server_path}"
+    def _resolve_server_path(self) -> Path:
+        configured = self.settings.llama_server_path
+        if configured.exists():
+            return configured
+
+        configured_s = str(configured)
+        alt_candidates: list[Path] = []
+        if configured_s.lower().endswith(".exe"):
+            alt_candidates.append(Path(configured_s[:-4]))
+        else:
+            alt_candidates.append(Path(configured_s + ".exe"))
+
+        alt_candidates.extend(
+            [
+                Path("bin/llama-cpp/llama-server"),
+                Path("bin/llama-cpp/llama-server.exe"),
+                Path("bin/llama-server"),
+                Path("bin/llama-server.exe"),
+            ]
+        )
+        seen: set[str] = set()
+        for candidate in alt_candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists():
+                self.settings.llama_server_path = candidate
+                return candidate
+
+        bin_dir = Path("bin")
+        if bin_dir.exists():
+            matches = sorted(
+                (
+                    p
+                    for p in bin_dir.rglob("llama-server*")
+                    if p.is_file()
+                    and p.name.lower() in {"llama-server", "llama-server.exe"}
+                ),
+                key=lambda p: (len(p.parts), len(str(p))),
             )
+            if matches:
+                self.settings.llama_server_path = matches[0]
+                return matches[0]
+
+        raise FileNotFoundError(
+            "llama-server not found. Checked configured path "
+            f"'{configured}' and common alternatives under 'bin/'. "
+            "Set LLAMA_SERVER_PATH to the correct binary path."
+        )
+
+    def _build_command(self) -> list[str]:
+        server_path = self._resolve_server_path()
 
         cmd = [
-            str(self.settings.llama_server_path),
+            str(server_path),
             "--host",
             self.settings.llama_host,
             "--port",
@@ -217,4 +265,3 @@ async def _async_sleep(seconds: float) -> None:
     import asyncio
 
     await asyncio.sleep(seconds)
-
