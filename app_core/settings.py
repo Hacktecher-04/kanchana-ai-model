@@ -92,6 +92,11 @@ class Settings:
 
 def load_settings() -> Settings:
     cpu_threads = max(1, os.cpu_count() or 1)
+    default_server_path = (
+        "bin/llama-cpp/llama-server.exe"
+        if os.name == "nt"
+        else "bin/llama-cpp/llama-server"
+    )
     app_api_key = os.getenv("APP_API_KEY", "").strip()
     if not app_api_key:
         raise RuntimeError(
@@ -123,7 +128,7 @@ def load_settings() -> Settings:
         llama_host=os.getenv("LLAMA_HOST", "127.0.0.1"),
         llama_port=int(os.getenv("LLAMA_PORT", "8081")),
         llama_server_path=Path(
-            os.getenv("LLAMA_SERVER_PATH", "bin/llama-cpp/llama-server.exe")
+            os.getenv("LLAMA_SERVER_PATH", default_server_path)
         ),
         llama_model_path=llama_model_path,
         llama_hf_repo=llama_hf_repo,
