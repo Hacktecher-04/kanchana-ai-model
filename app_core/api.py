@@ -55,6 +55,9 @@ limiter = TokenBucketLimiter(
 manager = LlamaServerManager(settings)
 _background_learning_task: Optional[asyncio.Task[Any]] = None
 _background_learning_stop_event: Optional[asyncio.Event] = None
+_runtime_boot_task: Optional[asyncio.Task[Any]] = None
+_runtime_start_lock = asyncio.Lock()
+_runtime_last_error = ""
 
 app = FastAPI(title="Secure Local LLM API", version="1.0.0")
 
@@ -289,10 +292,34 @@ def _prepare_memory_write_lines(
     return [x for x in lines if x]
 
 
+def _runtime_is_running() -> bool:
+    proc = manager.process
+    return proc is not None and proc.poll() is None
+
+
+async def _ensure_runtime_started() -> bool:
+    global _runtime_last_error
+    if _runtime_is_running():
+        return True
+    async with _runtime_start_lock:
+        if _runtime_is_running():
+            return True
+        try:
+            await manager.start()
+            _runtime_last_error = ""
+            return True
+        except Exception as exc:
+            _runtime_last_error = str(exc)
+            return False
+
+
 @app.on_event("startup")
 async def _startup() -> None:
-    global _background_learning_task, _background_learning_stop_event
-    await manager.start()
+    global _background_learning_task, _background_learning_stop_event, _runtime_boot_task
+    _runtime_boot_task = asyncio.create_task(
+        _ensure_runtime_started(),
+        name="llama-runtime-startup",
+    )
     if settings.enable_background_learning:
         _background_learning_stop_event = asyncio.Event()
         _background_learning_task = asyncio.create_task(
@@ -306,7 +333,17 @@ async def _startup() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
-    global _background_learning_task, _background_learning_stop_event
+    global _background_learning_task, _background_learning_stop_event, _runtime_boot_task
+    if _runtime_boot_task is not None:
+        if not _runtime_boot_task.done():
+            _runtime_boot_task.cancel()
+            try:
+                await _runtime_boot_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        _runtime_boot_task = None
     if _background_learning_stop_event is not None:
         _background_learning_stop_event.set()
     if _background_learning_task is not None:
@@ -333,7 +370,13 @@ def _cleanup() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    if _runtime_is_running():
+        llm = "ready"
+    elif _runtime_last_error:
+        llm = "error"
+    else:
+        llm = "starting"
+    return {"status": "ok", "llm": llm}
 
 
 @app.post("/v1/chat", response_model=ChatResponse)
@@ -341,6 +384,12 @@ async def chat(
     payload: ChatRequest,
     _: str = Depends(_auth_and_rate_limit),
 ) -> ChatResponse:
+    if not await _ensure_runtime_started():
+        detail = "Model runtime unavailable. Try again shortly."
+        if _runtime_last_error:
+            detail = f"{detail} Last error: {_runtime_last_error[:260]}"
+        raise HTTPException(status_code=503, detail=detail)
+
     msg = payload.message.strip()
     if len(msg) > settings.max_input_chars:
         raise HTTPException(
