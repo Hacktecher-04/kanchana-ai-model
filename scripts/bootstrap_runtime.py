@@ -28,12 +28,41 @@ def download(url: str, output_path: Path) -> None:
     print(f"Saved: {output_path}")
 
 
+def _normalize_runtime_layout(runtime_dir: Path, binary_name: str) -> Path:
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    expected = runtime_dir / binary_name
+    if expected.exists():
+        return expected
+
+    candidates = sorted(
+        (p for p in runtime_dir.rglob(binary_name) if p.is_file()),
+        key=lambda p: len(p.parts),
+    )
+    if not candidates:
+        raise FileNotFoundError(
+            f"{binary_name} not found after extraction under: {runtime_dir}"
+        )
+
+    source_parent = candidates[0].parent
+    if source_parent != runtime_dir:
+        for item in source_parent.iterdir():
+            target = runtime_dir / item.name
+            if target.exists():
+                continue
+            shutil.move(str(item), str(target))
+
+    if not expected.exists():
+        raise FileNotFoundError(f"{binary_name} not found at expected path: {expected}")
+    return expected
+
+
 def ensure_llama_server() -> None:
     system = platform.system().lower()
     arch = platform.machine().lower()
 
     if system == "windows":
-        server_path = Path("bin/llama-cpp/llama-server.exe")
+        runtime_dir = Path("bin/llama-cpp")
+        server_path = runtime_dir / "llama-server.exe"
         asset = f"llama-{LLAMA_RELEASE}-bin-win-cpu-x64.zip"
         release_file = Path(f"bin/{asset}")
         url = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_RELEASE}/{asset}"
@@ -42,12 +71,14 @@ def ensure_llama_server() -> None:
             return
         download(url, release_file)
         with zipfile.ZipFile(release_file, "r") as zf:
-            zf.extractall("bin/llama-cpp")
-        print(f"Extracted runtime to: bin/llama-cpp")
+            zf.extractall(runtime_dir)
+        _normalize_runtime_layout(runtime_dir, "llama-server.exe")
+        print(f"Extracted runtime to: {runtime_dir}")
         return
 
     if system == "linux" and arch in {"x86_64", "amd64"}:
-        server_path = Path("bin/llama-cpp/llama-server")
+        runtime_dir = Path("bin/llama-cpp")
+        server_path = runtime_dir / "llama-server"
         asset = f"llama-{LLAMA_RELEASE}-bin-ubuntu-x64.tar.gz"
         release_file = Path(f"bin/{asset}")
         url = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_RELEASE}/{asset}"
@@ -56,18 +87,23 @@ def ensure_llama_server() -> None:
             return
         download(url, release_file)
         with tarfile.open(release_file, "r:gz") as tf:
-            tf.extractall("bin/llama-cpp")
+            tf.extractall(runtime_dir)
+        server_path = _normalize_runtime_layout(runtime_dir, "llama-server")
         server_path.chmod(0o755)
-        print(f"Extracted runtime to: bin/llama-cpp")
+        print(f"Extracted runtime to: {runtime_dir}")
         return
 
     raise RuntimeError(f"Unsupported platform: system={system} arch={arch}")
 
 
 def ensure_model() -> None:
-    model_path = Path(
-        os.getenv("LLAMA_MODEL_PATH", "models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
-    )
+    hf_repo = os.getenv("LLAMA_HF_REPO", "").strip()
+    model_path_raw = os.getenv("LLAMA_MODEL_PATH", "").strip()
+    if not model_path_raw and hf_repo:
+        print(f"Skipping local model download; using HF repo: {hf_repo}")
+        return
+
+    model_path = Path(model_path_raw or "models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
     model_url = os.getenv(
         "LLAMA_MODEL_URL",
         "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true",
