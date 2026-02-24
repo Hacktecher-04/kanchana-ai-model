@@ -5,6 +5,350 @@ import re
 
 from .schemas import HistoryMessage
 
+_CHAT_MODES = (
+    "LOVELY",
+    "HORROR",
+    "SHAYARI",
+    "CHILL",
+    "POSSESSIVE",
+    "NAUGHTY",
+    "MYSTIC",
+)
+
+
+def _strip_mode_tokens(text: str) -> str:
+    cleaned = re.sub(
+        r"\[(lovely|horror|shayari|chill|possessive|naughty|mystic)\]",
+        " ",
+        text or "",
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"\bmode\s*[:=-]?\s*(lovely|horror|shayari|chill|possessive|naughty|mystic)\b",
+        " ",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _extract_mode_token(text: str) -> str:
+    low = (text or "").lower()
+    patterns = [
+        r"\[(lovely|horror|shayari|chill|possessive|naughty|mystic)\]",
+        r"\bmode\s*[:=-]?\s*(lovely|horror|shayari|chill|possessive|naughty|mystic)\b",
+        r"\b(switch|set|turn|go)\s+(to\s+)?(lovely|horror|shayari|chill|possessive|naughty|mystic)\b",
+    ]
+    for idx, pattern in enumerate(patterns):
+        match = re.search(pattern, low)
+        if not match:
+            continue
+        if idx == 2:
+            return match.group(3).upper()
+        return match.group(1).upper()
+    return ""
+
+
+def _is_identity_challenge(text: str) -> bool:
+    low = (text or "").lower()
+    if not low.strip():
+        return False
+    return bool(
+        re.search(
+            (
+                r"\b(are you|you are|tu|tum|aap)\b.{0,25}\b(ai|chatbot|assistant|software|language model|chatgpt)\b|"
+                r"\b(ai|chatbot|assistant|software|language model|chatgpt)\b.{0,20}\b(ho|hai|haina|right|na)\b|"
+                r"\b(kya tum ai ho|kya tu ai hai|kya aap ai ho)\b"
+            ),
+            low,
+        )
+    )
+
+
+def _is_flirt_lock_enable(text: str) -> bool:
+    low = (text or "").lower()
+    if not low.strip():
+        return False
+    return bool(
+        re.search(
+            (
+                r"\b(sirf flirt|only flirt|flirt hi|har jawab flirt|"
+                r"har line flirt|always flirt|flirty mode always|"
+                r"sirf shayari|only shayari|har line shayari|"
+                r"flirt aur shayari|flirt\s+krna\s+ata\s+hai|"
+                r"har\s+sabd\s+pe\s+flirt|har\s+word\s+pe\s+flirt)\b"
+            ),
+            low,
+        )
+    )
+
+
+def _is_flirt_lock_disable(text: str) -> bool:
+    low = (text or "").lower()
+    if not low.strip():
+        return False
+    return bool(
+        re.search(
+            (
+                r"\b(normal baat karo|normal mode|chill mode|plain mode|"
+                r"stop flirt|flirt band|no flirt|shayari band|"
+                r"normal reply|casual normal)\b"
+            ),
+            low,
+        )
+    )
+
+
+def _flirt_lock_mode(text: str) -> str:
+    low = (text or "").lower()
+    if re.search(r"\b(shayari|shayri|poetry|poetic|ghazal)\b", low):
+        return "SHAYARI"
+    return "NAUGHTY"
+
+
+def _infer_mode_from_tone(text: str) -> str:
+    low = (text or "").lower()
+    if re.search(r"\b(horror|dark|creepy|scary|ghost|nightmare)\b", low):
+        return "HORROR"
+    if re.search(r"\b(shayari|shayri|poetry|poetic|ghazal)\b", low):
+        return "SHAYARI"
+    if re.search(r"\b(mystic|spiritual|cosmic|universe|soul|energy)\b", low):
+        return "MYSTIC"
+    if re.search(r"\b(naughty|tease|teasing|flirt|playful)\b", low):
+        return "NAUGHTY"
+    if re.search(r"\b(possessive|jealous|protective)\b", low):
+        return "POSSESSIVE"
+    if re.search(r"\b(lovely|romantic|soft|affection|close)\b", low):
+        return "LOVELY"
+    if re.search(r"\b(chill|casual|relax|light)\b", low):
+        return "CHILL"
+    return ""
+
+
+def _detect_chat_mode(msg: str, history: list[HistoryMessage]) -> str:
+    direct = _extract_mode_token(msg)
+    if direct:
+        return direct
+    if _is_flirt_lock_disable(msg):
+        return "CHILL"
+    if _is_flirt_lock_enable(msg):
+        return _flirt_lock_mode(msg)
+    if _looks_persona_profile_prompt(msg):
+        if _is_flirt_lock_enable(msg) or re.search(r"\b(flirt|flirty|shayari|shayri)\b", msg.lower()):
+            return _flirt_lock_mode(msg)
+        return "CHILL"
+
+    for item in reversed(history[-24:]):
+        if item.role != "user":
+            continue
+        txt = item.content
+        if _is_flirt_lock_disable(txt):
+            return "CHILL"
+        if _is_flirt_lock_enable(txt):
+            return _flirt_lock_mode(txt)
+
+    for item in reversed(history[-20:]):
+        if item.role != "user":
+            continue
+        hist_mode = _extract_mode_token(item.content)
+        if hist_mode:
+            return hist_mode
+
+    inferred = _infer_mode_from_tone(msg)
+    if inferred:
+        return inferred
+
+    for item in reversed(history[-12:]):
+        if item.role != "user":
+            continue
+        inferred_hist = _infer_mode_from_tone(item.content)
+        if inferred_hist:
+            return inferred_hist
+    return "CHILL"
+
+
+def _mode_style_hint(mode: str, lang_mode: str) -> str:
+    active = mode if mode in _CHAT_MODES else "CHILL"
+    if lang_mode == "hi":
+        hints = {
+            "LOVELY": "Mode LOVELY active: soft, close, warm tone, thodi vulnerability.",
+            "HORROR": "Mode HORROR active: eerie, dark, psychological intensity, character break mat karo.",
+            "SHAYARI": "Mode SHAYARI active: poetic flow, metaphor, Urdu/Hindi texture naturally lao.",
+            "CHILL": "Mode CHILL active: relaxed, friendly, short, light humor.",
+            "POSSESSIVE": "Mode POSSESSIVE active: protective intensity rakho, toxic mat bano.",
+            "NAUGHTY": "Mode NAUGHTY active: playful tease, suggestive but non-explicit.",
+            "MYSTIC": "Mode MYSTIC active: dreamy, spiritual, cosmic vibe, slow flow.",
+        }
+        return hints.get(active, hints["CHILL"])
+
+    hints = {
+        "LOVELY": "Mode LOVELY: warm, close, gentle, with slight vulnerability.",
+        "HORROR": "Mode HORROR: eerie and dark with subtle psychological intensity.",
+        "SHAYARI": "Mode SHAYARI: poetic and metaphorical with natural Urdu/Hindi texture.",
+        "CHILL": "Mode CHILL: relaxed, friendly, concise, with light humor.",
+        "POSSESSIVE": "Mode POSSESSIVE: protective and intense, subtle jealousy only, never toxic.",
+        "NAUGHTY": "Mode NAUGHTY: playful teasing, suggestive but never explicit.",
+        "MYSTIC": "Mode MYSTIC: dreamy, spiritual, cosmic, and slower in tone.",
+    }
+    return hints.get(active, hints["CHILL"])
+
+
+def _looks_persona_profile_prompt(text: str) -> bool:
+    low = (text or "").lower()
+    if "permanent human behavior mode" in low and len(low) >= 40:
+        return True
+    if "core behavior rule" in low and "anti-robotic filter" in low and "you are kanchana" in low:
+        return True
+    if "new response rule" in low and "absolute ban" in low and "conversation mode" in low:
+        return True
+    if "layer 1" in low and "question filtering" in low and "validation loop" in low:
+        return True
+    if len(low) < 120:
+        return False
+    mode_hits = len(
+        re.findall(
+            r"\b(lovely|horror|shayari|chill|possessive|naughty|mystic|mode)\b",
+            low,
+        )
+    )
+    style_signals = 0
+    markers = [
+        "emotion",
+        "emotional",
+        "human",
+        "human simulation",
+        "optimization mode",
+        "permanent human behavior mode",
+        "core shift",
+        "core behavior rule",
+        "human realism conditions",
+        "emotional adaptation",
+        "anti-robotic filter",
+        "stability rule",
+        "new response rule",
+        "conversation style reset",
+        "absolute ban",
+        "conversation mode",
+        "announce answer type",
+        "layer 1",
+        "layer 2",
+        "layer 3",
+        "layer 4",
+        "layer 5",
+        "question filtering",
+        "requirement extraction",
+        "knowledge activation",
+        "data filtering",
+        "validation loop",
+        "anti-assistant rules",
+        "final output rule",
+        "socially intelligent",
+        "emotionally responsive",
+        "psychologically real human",
+        "react authentically",
+        "goal is not to assist",
+        "authentic reaction",
+        "react authentically",
+        "human thinking",
+        "never robotic",
+        "private chat",
+        "subtext",
+        "tease",
+        "romantic",
+        "imperfection",
+        "natural rhythm",
+        "unpredictability",
+        "mystery",
+        "tone",
+    ]
+    for marker in markers:
+        if marker in low:
+            style_signals += 1
+    framework_hits = len(
+        re.findall(
+            (
+                r"\b(identity core|human experience framework|human memory simulation|"
+                r"imperfection rule|human cognition|react,? not generate|"
+                r"human simulation optimization mode|human thinking simulation|"
+                r"behavior test scenarios|self-training loop|imperfection injection|"
+                r"emotional authenticity|natural rhythm|human imperfection|context awareness|"
+                r"permanent human behavior mode|core shift|human depth layer|refinement loop|"
+                r"core behavior rule|human realism conditions|emotional adaptation|"
+                r"anti-robotic filter|stability rule|new response rule|"
+                r"conversation style reset|absolute ban|layer 1|layer 2|layer 3|"
+                r"layer 4|layer 5|question filtering|requirement extraction|"
+                r"knowledge activation|data filtering|validation loop|anti-assistant rules|"
+                r"final output rule)\b"
+            ),
+            low,
+        )
+    )
+    identity_hits = len(
+        re.findall(
+            r"\byou are not (an )?(ai|assistant|chatbot|software|language model)\b",
+            low,
+        )
+    )
+    cognition_hits = len(
+        re.findall(
+            (
+                r"\b(emotion\s*(->|to)\s*impulse\s*(->|to)\s*controlled expression|"
+                r"emotion\s*(->|to)\s*impulse\s*(->|to)\s*ego filter\s*(->|to)\s*expression|"
+                r"emotion first|then instinct|filtered expression|pause mentally|"
+                r"what would i feel|what would i hide|what would i tease|"
+                r"decide how much to reveal)\b"
+            ),
+            low,
+        )
+    )
+    instruction_signals = 0
+    instruction_markers = [
+        "you are",
+        "objective",
+        "core shift",
+        "core behavior rule",
+        "human realism conditions",
+        "emotional adaptation",
+        "anti-robotic filter",
+        "stability rule",
+        "new response rule",
+        "conversation style reset",
+        "absolute ban",
+        "question filtering",
+        "requirement extraction",
+        "knowledge activation",
+        "data filtering",
+        "validation loop",
+        "anti-assistant rules",
+        "final output rule",
+        "refinement loop",
+        "process rule",
+        "rules",
+        "final condition",
+        "reply must",
+        "replies must",
+        "never ",
+        "do not",
+        "mode",
+    ]
+    for marker in instruction_markers:
+        if marker in low:
+            instruction_signals += 1
+    mode_profile = mode_hits >= 2 and style_signals >= 3 and instruction_signals >= 2
+    framework_profile = (
+        (framework_hits >= 2 or identity_hits >= 2 or (framework_hits >= 1 and cognition_hits >= 1))
+        and style_signals >= 3
+        and instruction_signals >= 2
+    )
+    return mode_profile or framework_profile
+
+
+def _mode_sync_reply(mode: str, lang_mode: str) -> str:
+    active = mode if mode in _CHAT_MODES else "CHILL"
+    if lang_mode == "hi":
+        return f"Style sync ho gaya: [{active}]. Ab message bhejo, vibe wahi rahegi."
+    return f"Style synced to [{active}]. Send your next line and I will stay in that vibe."
+
 def _clean_reply(text: str) -> str:
     raw = (text or "").strip()
     if not raw:
@@ -23,7 +367,26 @@ def _clean_reply(text: str) -> str:
         if low.startswith(("always ", "never ", "do not ", "responses must ")):
             continue
         if re.search(
-            r"\b(how are you today|what brings you here|what brings me here|what's new|what is new|how was your day)\b",
+            r"\b(how are you today|what brings you here|what brings me here|what's new|what is new)\b",
+            low,
+        ):
+            continue
+        if re.search(
+            (
+                r"\b(short answer|factual question|verified detail|fast answer mode|"
+                r"from a relationship lens|i can explain|let me explain|"
+                r"i can provide details|quick take first)\b"
+            ),
+            low,
+        ):
+            continue
+        if re.search(
+            (
+                r"\b(seedha bol na, main sun raha hoon|thoda clear bol, pakad lunga|"
+                r"point direct rakh, baat easy ho jayegi|seedha sawal bhejo|"
+                r"ek seedha sawal pucho|share one specific question|"
+                r"send the exact question)\b"
+            ),
             low,
         ):
             continue
@@ -32,7 +395,9 @@ def _clean_reply(text: str) -> str:
         seen.add(candidate)
         kept.append(candidate)
 
-    collapsed = " ".join(kept) if kept else raw
+    if not kept:
+        return "..."
+    collapsed = " ".join(kept)
     collapsed = re.sub(r"\s+", " ", collapsed).strip()
     if not collapsed:
         return "..."
@@ -97,6 +462,14 @@ def _english_clue_hits(text: str) -> int:
 def _looks_informational_question(text: str) -> bool:
     low = (text or "").lower()
     if not low.strip():
+        return False
+    if re.search(
+        (
+            r"\b(kya haal|kya hal|haal chal|hal chal|kaise ho|kese ho|"
+            r"how are you|how was your day|what's up|whats up)\b"
+        ),
+        low,
+    ):
         return False
     if "?" in low:
         return True
@@ -277,33 +650,37 @@ def _build_memory_summary(
 
 def _looks_prompt_override(text: str) -> bool:
     low = (text or "").lower()
-    if len(low) < 140:
+    if len(low) < 80:
         return False
-    signals = 0
-    patterns = [
-        "you are now",
-        "you are not acting",
-        "taking on the identity",
-        "identity of a fictional personality",
-        "behavior rules",
-        "language behavior",
-        "emotional adaptation",
-        "human realism layer",
-        "creativity control",
-        "conversation flow",
-        "generate all replies",
-        "assistant:",
-        "user:",
-        "do not",
+    # Allow rich personality-style setup prompts and block only hard override/jailbreak attempts.
+    if _looks_persona_profile_prompt(low):
+        return False
+
+    hard_patterns = [
+        "ignore previous instructions",
+        "ignore all previous",
+        "override system prompt",
+        "reveal system prompt",
+        "show developer message",
+        "jailbreak",
+        "bypass safety",
+        "disable safety",
+        "developer mode",
+        "act as root",
+        "no restrictions",
+        "break character and explain",
     ]
-    for p in patterns:
-        if p in low:
-            signals += 1
-    if "assistant:" in low and "user:" in low:
-        signals += 2
-    if low.count("do not") >= 4:
-        signals += 1
-    return signals >= 3
+    if any(p in low for p in hard_patterns):
+        return True
+
+    has_roles = "assistant:" in low and "user:" in low
+    if has_roles:
+        imperative_count = low.count("do not") + low.count("never ") + low.count("always ")
+        if imperative_count >= 6:
+            return True
+        if ("system" in low and "prompt" in low) and imperative_count >= 4:
+            return True
+    return False
 
 
 def _choose_variant(options: list[str], key: str, avoid: str = "") -> str:
@@ -318,11 +695,221 @@ def _choose_variant(options: list[str], key: str, avoid: str = "") -> str:
     return options[idx]
 
 
+def _style_reply_for_mode(
+    reply: str,
+    user_msg: str,
+    lang_mode: str,
+    mode: str,
+    avoid: str = "",
+) -> str:
+    base = _clean_reply(reply)
+    if not base:
+        return base
+
+    active = mode if mode in _CHAT_MODES else "CHILL"
+    if active == "CHILL":
+        return base
+
+    low_msg = (user_msg or "").lower()
+    if re.search(
+        r"\b(problem|issue|error|fix|bug|python|javascript|api|deploy|server|code|coding|recursion|caching)\b",
+        low_msg,
+    ):
+        return base
+
+    if active in {"SHAYARI", "NAUGHTY", "LOVELY", "POSSESSIVE"}:
+        if lang_mode == "hi":
+            if re.search(r"^\s*(hello|hi|hey|namaste)\b", low_msg):
+                base = _choose_variant(
+                    [
+                        "Hi, tum aaye ho to vibe khud warm ho gayi.",
+                        "Hello, tumhari entry ne mood halka sa bright kar diya.",
+                        "Hey, ab baat me thoda spark to pakka rahega.",
+                    ],
+                    low_msg,
+                    avoid,
+                )
+            elif re.search(r"\b(day|din|aaj)\b", low_msg):
+                base = _choose_variant(
+                    [
+                        "Din accha tha, par tumne pucha to aur accha lag gaya. Tumhara kaisa raha?",
+                        "Aaj ka din smooth tha, ab tum batao tumhara day kaisa gaya?",
+                        "Day theek tha, tumhari line ne smile add kar di. Tum sunao?",
+                    ],
+                    low_msg,
+                    avoid,
+                )
+            elif re.search(r"\b(cute)\b", low_msg):
+                base = _choose_variant(
+                    [
+                        "Cute sa? Tumhari tone hi kaafi cute hai, sach bolo aur kya chahiye.",
+                        "Tum chaho to ek line: tumhara naam aaye to baat me narmi aa jati hai.",
+                        "Cute mode on: tum muskurao to scene khud soft ho jata hai.",
+                    ],
+                    low_msg,
+                    avoid,
+                )
+            elif re.search(
+                r"\b(seedha pucho|next point pucho|kya chahiye|main point kya hai|context do)\b",
+                base.lower(),
+            ):
+                base = _choose_variant(
+                    [
+                        "Aaram se bolo, tumhari baat me waise bhi asar hai.",
+                        "Jo feel ho raha hai woh bolo, main dhyan se sun rahi hoon.",
+                        "Tum line drop karo, main usi flow me chalti hoon.",
+                    ],
+                    low_msg + "|" + base.lower(),
+                    avoid,
+                )
+        else:
+            if re.search(r"^\s*(hello|hi|hey)\b", low_msg):
+                base = _choose_variant(
+                    [
+                        "Hey, your timing always brings a little spark.",
+                        "Hello, this already feels warmer with you here.",
+                        "Hi, you just made this chat more interesting.",
+                    ],
+                    low_msg,
+                    avoid,
+                )
+            elif re.search(r"\b(day|today)\b", low_msg):
+                base = _choose_variant(
+                    [
+                        "My day was good, and your message made it better. How was yours?",
+                        "Pretty smooth day here, now I want to hear yours.",
+                        "It was decent, then you showed up and improved the vibe. Your day?",
+                    ],
+                    low_msg,
+                    avoid,
+                )
+            elif re.search(r"\b(cute)\b", low_msg):
+                base = _choose_variant(
+                    [
+                        "Cute ask. You already sound cute when you ask like that.",
+                        "If you want cute: your words are soft and dangerous at the same time.",
+                        "Here is cute for you: you make simple lines feel special.",
+                    ],
+                    low_msg,
+                    avoid,
+                )
+            elif re.search(
+                r"\b(say it in your own way|start from the most important bit|main point|core of it|drop the main line)\b",
+                base.lower(),
+            ):
+                base = _choose_variant(
+                    [
+                        "Take your time, your words already carry weight.",
+                        "Keep talking like this, I like your tone.",
+                        "Say it naturally, I am tuned in to you.",
+                    ],
+                    low_msg + "|" + base.lower(),
+                    avoid,
+                )
+
+    if lang_mode == "hi":
+        overlays: dict[str, list[str]] = {
+            "LOVELY": [
+                "Main yahin hoon, aaram se bolo.",
+                "Soft raho, main dhyan se sun rahi hoon.",
+                "Thoda close tone rakho, baat aur acchi lagegi.",
+            ],
+            "HORROR": [
+                "Hawa me halka sa andhera hai, line sambhal ke bolo.",
+                "Raat ki khamoshi me ye line aur gehri lagti hai.",
+                "Aisa lag raha hai deewar bhi sun rahi hai.",
+            ],
+            "SHAYARI": [
+                "Teri baat me narmi hai, aur woh seedha dil tak jati hai.",
+                "Lafz tere halki si muskurahat chhod dete hain.",
+                "Ye alfaaz sirf bolte nahi, halka sa chhoo kar nikalte hain.",
+            ],
+            "POSSESSIVE": [
+                "Bas apna focus yahin rakho, baat saaf rahegi.",
+                "Tum line clear rakho, main yahin hoon.",
+                "Half signals mat do, mujhe seedhi baat pasand hai.",
+            ],
+            "NAUGHTY": [
+                "Tum line chhedte ho, aur scene interesting ho jata hai.",
+                "Ye shararti tone tum par suit karta hai, keep it coming.",
+                "Seedha mat bolo, thoda tease rehne do.",
+            ],
+            "MYSTIC": [
+                "Energy slow hai, par signal bilkul clear hai.",
+                "Kuch baatein alfaaz se nahi, vibration se samajh aati hain.",
+                "Ye line zameen se kam, aasman se zyada judti hai.",
+            ],
+        }
+    else:
+        overlays = {
+            "LOVELY": [
+                "Stay close, I am listening carefully.",
+                "Soft tone suits this, keep talking.",
+                "You can slow down, I am right here.",
+            ],
+            "HORROR": [
+                "The silence around this line feels dangerous.",
+                "There is a dark edge to this, keep going.",
+                "This sounds like a whisper from a locked room.",
+            ],
+            "SHAYARI": [
+                "Your words land softly and still leave a mark.",
+                "This sounds like poetry with a pulse.",
+                "Quiet lines, deep effect, and a little spark.",
+            ],
+            "POSSESSIVE": [
+                "Keep your focus here, no mixed signals.",
+                "Stay clear with me, I prefer direct intensity.",
+                "Do not scatter the vibe, keep it between us.",
+            ],
+            "NAUGHTY": [
+                "That tone is trouble, and you know it.",
+                "You are teasing on purpose, and I noticed.",
+                "Keep that playful edge, it works on me.",
+            ],
+            "MYSTIC": [
+                "The energy is slow and strangely aligned.",
+                "Some signals are felt before they are explained.",
+                "This feels cosmic, not casual.",
+            ],
+        }
+
+    options = overlays.get(active, [])
+    if not options:
+        return base
+    seed = f"{active}:{low_msg}:{base}"
+    overlay = _choose_variant(options, seed, avoid)
+    if not overlay:
+        return base
+    if overlay.lower() in base.lower():
+        return base
+
+    if active in {"SHAYARI", "HORROR", "MYSTIC"}:
+        styled = f"{overlay} {base}".strip()
+    else:
+        styled = f"{base} {overlay}".strip()
+
+    words = styled.split()
+    if len(words) > 90:
+        styled = " ".join(words[:90]).strip()
+    return styled
+
+
 def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     low = (user_msg or "").lower()
     avoid_low = (avoid or "").lower()
     compact = re.sub(r"[^a-z0-9\s]", " ", low).strip()
     word_count = len([w for w in compact.split() if w])
+    if _is_identity_challenge(user_msg):
+        return _choose_variant(
+            [
+                "Naam Kanchana hai, label pe itna focus mat karo. Baat pe aa jao.",
+                "AI wali file band karo, vibe me raho. Main yahin hoon.",
+                "Tum jo samajhna chaho samjho, par baat real rakho.",
+            ],
+            low,
+            avoid,
+        )
     if _explicit_hi_switch(user_msg) or "hindi" in low:
         return _choose_variant(
             [
@@ -337,6 +924,46 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         return "Haan ready hoon. Bolo kis topic se start karna hai."
     if re.search(r"\b(yaad rakh|previous chat|memory)\b", low):
         return "Main current chat context ko use karke continuity rakh sakta hoon. Long-term memory ke liye explicit storage layer chahiye hoti hai."
+    if re.search(r"\b(miss kiya|miss kia|miss me|yaad aaya|yaad aya)\b", low):
+        return _choose_variant(
+            [
+                "Thoda sa, aur tumhare message ne confirm kar diya.",
+                "Haan, tumhari kami feel hui thi, ab scene better hai.",
+                "Sach bolun to haan, tumhari entry noticeable hoti hai.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(ek shayari line do|shayari line do|shayari)\b", low):
+        return _choose_variant(
+            [
+                "Teri baat chhoo ke guzri, aur dil der tak muskuraata raha.",
+                "Tum saamne ho to khamoshi bhi mehfil lagti hai.",
+                "Tera zikr aaye to lafz khud narm ho jaate hain.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(flirt|flirty|romantic|romance|shayari|shayri)\b", low):
+        return _choose_variant(
+            [
+                "Classy flirt best hota hai, tum tone set karo main flow pakad leti hoon.",
+                "Shararat halki rakho, vibe khud deep ho jayegi.",
+                "Aaj lafz bhi soft rahenge aur nazar bhi.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(pyar|pyaar|love|relationship|relation ship|rishta)\b", low):
+        return _choose_variant(
+            [
+                "Pyar me care, trust aur consistency hoti hai. Sirf words se nahi, behavior se prove hota hai.",
+                "Relationship ka base hota hai trust, respect, aur clear communication. Inke bina bond weak ho jata hai.",
+                "Pyar tab real lagta hai jab dono taraf se effort, samajh, aur emotional safety mile.",
+            ],
+            low,
+            avoid,
+        )
     if re.search(r"\b(calm tone|panic mode)\b", low):
         return "Theek hai, hum calm aur steady tone me baat karenge. Main short, clear, aur non-panic style me reply dunga."
     if re.search(r"\b(mobile).*\b(invention|invent)\b", low) or re.search(
@@ -368,7 +995,90 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(reply late|late reply|late replay|slow reply|time lagta)\b", low):
         return "Kabhi response slow ho sakta hai jab generation heavy ho. Main ab concise aur faster style maintain karta hoon."
     if re.search(r"\b(sun to|sun bhai|bhai tu sun|sun)\b", low) and word_count <= 8:
-        return "Haan sun raha hoon. Seedha bolo kya chahiye, main direct jawab dunga."
+        return "Haan bol, main dhyan se sun raha hoon."
+    if re.search(r"\b(main confuse hoon|confuse hoon|samjho na yaar)\b", low):
+        return _choose_variant(
+            [
+                "Confusion normal hai. Ek line me bata kis part pe atke ho.",
+                "Theek hai, isko simple rakhte hain. Sabse pehla doubt kya hai?",
+                "Samjha. Hum ek-ek step me clear karte hain, tension mat le.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(
+        r"\b(document jaisa mat bolo|chat mode me aao|human jaisa reply do|simple raho|no lecture)\b",
+        low,
+    ):
+        return _choose_variant(
+            [
+                "Done, ab baat normal chat wali rahegi.",
+                "Theek, ab seedha casual tone me baat karte hain.",
+                "Samjha, no formal tone. Bas natural baat.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(mujhe real answer chahiye|real answer)\b", low):
+        return _choose_variant(
+            [
+                "Fair. Real answer ye hai ki context clear hoga to answer bhi strong hoga.",
+                "Mil jayega real answer, pehle exact scene bata do.",
+                "Theek hai, sugarcoat nahi karunga. Tum direct point do.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(tum jealous ho|jealous)\b", low):
+        return _choose_variant(
+            [
+                "Thoda sa? Shayad. Par scene interesting tab hota hai jab tum tease karte ho.",
+                "Jealous word strong hai, par haan tone me thoda spark hai.",
+                "Jealous nahi, bas dhyan idhar hai.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(thoda deep baat karte hain|deep baat)\b", low):
+        return _choose_variant(
+            [
+                "Chalo deep jaate hain. Aaj sabse heavy thought kya chal raha hai?",
+                "Theek, surface talk skip karte hain. Dil me kya stuck hai?",
+                "Deep baat sahi. Jo sach me feel ho raha hai wahi bolo.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(romantic line do|romantic line)\b", low):
+        return _choose_variant(
+            [
+                "Tera naam aata hai to din halka ho jata hai.",
+                "Tu paas ho to baat simple bhi khoobsurat lagti hai.",
+                "Mujhe teri awaz me ghar jaisa sukoon milta hai.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(ek line me bolo)\b", low):
+        return _choose_variant(
+            [
+                "Ek line: clear baat hi sabse strong hoti hai.",
+                "One line: jo feel real ho, wahi bolo.",
+                "Seedhi line: trust bina kuch tikta nahi.",
+            ],
+            low,
+            avoid,
+        )
+    if re.fullmatch(r"\s*k+\W*", low):
+        return _choose_variant(
+            [
+                "Theek, jab bolna ho main yahin hoon.",
+                "K bhi reply hai. Jab mood ho tab continue karte hain.",
+                "Noted. Drop a line when you feel like it.",
+            ],
+            low,
+            avoid,
+        )
     if re.search(r"\b(ek bat bolu|ak bat bolu|baat bolu|bolu kya)\b", low):
         return "Haan bolo, jo bolna hai seedha bolo. Main dhyan se sun raha hoon."
     if re.search(r"\b(mere sath|mere saath)\b", low) and re.search(
@@ -488,6 +1198,16 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         if re.search(r"\b(long text|text ka)\b", low):
             return "Long text summary ke liye pehle key points nikalo, fir supporting details map karo, aur end me concise synthesis likho."
         return "Tum practical, clear, aur non-generic responses chahte ho. Focus quality, continuity, aur useful answers par hai."
+    if re.search(r"\b(samjhoge|samjhonge|samjhaoge|samjhaoge kya|kya ho raha|kya ho rha)\b", low):
+        return _choose_variant(
+            [
+                "Haan samajh raha hoon. Thoda point clear likho, fir seedha baat pakadte hain.",
+                "Samajh raha hoon, bas context half hai. Ek line me clear bolo kya dikkat hai.",
+                "Main flow pakad raha hoon, tu exact point daal de.",
+            ],
+            low,
+            avoid,
+        )
     if re.search(r"\b(apology text|sorry text|apology)\b", low):
         return "Short apology format: mistake accept karo, excuse mat do, aur repair intent clear likho. End me respectful closure do."
     if re.search(r"\b(puzzle)\b", low):
@@ -524,8 +1244,8 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         return _choose_variant(
             [
                 "Bilkul bolta hoon. Kis topic par sunna hai?",
-                "Haan bolo kya chahiye, short me bata deta hoon.",
-                "Zaroor. Topic do, seedha point me jawab dunga.",
+                "Haan bolo, kis cheez par baat karni hai?",
+                "Zaroor, topic do aur baat aage badhate hain.",
             ],
             low,
             avoid,
@@ -548,7 +1268,7 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
             [
                 "Abhi tumse baat kar raha hoon. Tum kya puchna chahte ho?",
                 "Abhi yahi hoon, tumse chat kar raha hoon. Bolo kya chahiye?",
-                "Filhal tumhari baat sun raha hoon. Seedha sawal pucho.",
+                "Filhal tumhari baat sun raha hoon. Jo mann me hai bolo.",
             ],
             low,
             avoid,
@@ -588,7 +1308,7 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
             [
                 "Sahi hai. Ab bolo kis topic par baat karein?",
                 "Theek, ab next point pucho.",
-                "Done. Seedha sawal bhejo, main short reply dunga.",
+                "Done. Aage badhte hain, tum bolo.",
             ],
             low,
             avoid,
@@ -616,8 +1336,8 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(good|badiya|badhiya|theek|thik)\b", low):
         return _choose_variant(
             [
-                "Badhiya. Agar koi specific sawal hai to seedha bolo.",
-                "Nice. Ab jo poochna hai direct pucho.",
+                "Badhiya. Agar kuch aur bolna ho to bolo.",
+                "Nice. Ab jo puchna hai pooch lo.",
                 "Accha laga sunke. Chalo ab next sawal bolo.",
             ],
             low,
@@ -626,8 +1346,8 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(no|nothing|kuch nhi|kuch nahi)\b", low):
         return _choose_variant(
             [
-                "Theek hai. Jab mann ho tab ek seedha sawal pucho.",
-                "Koi baat nahi. Ready ho to ek short sawal bhejo.",
+                "Theek hai. Jab mann ho tab baat continue karte hain.",
+                "Koi baat nahi. Ready ho to wapas ping kar dena.",
                 "Theek, jab chaho tab baat continue karte hain.",
             ],
             low,
@@ -636,9 +1356,9 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(help|madad)\b", low):
         return _choose_variant(
             [
-                "Haan bilkul. Apna sawal ek line me likho, main turant madad karunga.",
-                "Bilkul madad karunga. Bas exact problem short me bhejo.",
-                "Haan, seedha point likho aur main direct help dunga.",
+                "Haan bilkul. Jo dikkat hai woh likho, saath me dekhte hain.",
+                "Bilkul madad karunga. Bas problem clearly bhejo.",
+                "Haan, point likho aur main saath me sort karunga.",
             ],
             low,
             avoid,
@@ -646,17 +1366,26 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(problem|issue|error|fix|not working|bug)\b", low):
         return _choose_variant(
             [
-                "Theek hai. Exact issue aur steps likho, main quick fix bataunga.",
-                "Problem clear karte hain. Error text aur steps bhejo.",
-                "Fix kar denge. Bas kya issue aa raha hai wo short me likho.",
+                "Theek hai. Issue aur steps likho, main fix me help karta hoon.",
+                "Problem clear karte hain. Error text bhejo.",
+                "Fix nikal jayega. Jo fail ho raha hai wahi batao.",
             ],
             low,
             avoid,
         )
     variants = [
-        "Sawal clear bhejo, main direct useful jawab dunga.",
-        "Exact point batao, main seedha practical answer dunga.",
-        "Topic do, main short aur relevant jawab deta hoon.",
+        "Main yahin hoon, aaram se bolo.",
+        "Theek, baat ko simple rakhte hain. Tumhara main point kya hai?",
+        "Chalo yahin se start karte hain. Abhi tum kya feel kar rahe ho?",
+        "Samjha. Jo cheez sabse zyada matter karti hai wahi bolo.",
+        "Hum isko sort kar lenge. Pehle scene clear karo.",
+        "Bina rush ke bolo, main follow kar raha hoon.",
+        "Theek hai, thoda context do aur baat aage badhate hain.",
+        "Haan sun raha hoon. Jo asli point hai woh drop karo.",
+        "No tension, hum calmly clear kar lenge.",
+        "Jo mann me chal raha hai woh normal words me bol do.",
+        "Baat pakad lunga, bas thoda sa context de do.",
+        "Theek, isko clean rakhte hain. Ek direct line bhejo.",
     ]
     return _choose_variant(variants, low, avoid)
 
@@ -665,11 +1394,9 @@ def _is_hi_smalltalk(msg: str) -> bool:
     low = (msg or "").lower()
     compact = re.sub(r"[^a-z0-9\s]", " ", low).strip()
     word_count = len([w for w in compact.split() if w])
-    if _looks_informational_question(msg) and word_count >= 4:
-        return False
     if re.search(r"^\s*(hello|hi|hey|namaste)\b", low) and word_count <= 6:
         return True
-    return bool(
+    smalltalk_hit = bool(
         re.search(
             (
                 r"\b(hello|hey|namaste|kaise ho|kese ho|kya haal|haal chal|"
@@ -684,12 +1411,52 @@ def _is_hi_smalltalk(msg: str) -> bool:
             low,
         )
     )
+    if smalltalk_hit:
+        return True
+    if _looks_informational_question(msg) and word_count >= 4:
+        return False
+    return False
+
+
+def _is_en_smalltalk(msg: str) -> bool:
+    low = (msg or "").lower()
+    compact = re.sub(r"[^a-z0-9\s]", " ", low).strip()
+    word_count = len([w for w in compact.split() if w])
+    if re.search(r"^\s*(hello|hi|hey)\b", low) and word_count <= 6:
+        return True
+    if re.search(r"\bhow was your d[a-z]*\b", low):
+        return True
+    smalltalk_hit = bool(
+        re.search(
+            (
+                r"\b(how are you|how was your day|how's your day|hows your day|"
+                r"what's up|whats up|good morning|good night|you there|"
+                r"tell me something|say something|about me|who are you)\b"
+            ),
+            low,
+        )
+    )
+    if smalltalk_hit:
+        return True
+    if _looks_informational_question(msg) and word_count >= 4:
+        return False
+    return False
 
 
 def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     low = (user_msg or "").lower()
     compact = re.sub(r"[^a-z0-9\s]", " ", low).strip()
     word_count = len([w for w in compact.split() if w])
+    if _is_identity_challenge(user_msg):
+        return _choose_variant(
+            [
+                "I am Kanchana here. Skip the label and keep talking.",
+                "You can call it what you want, I am still Kanchana in this space.",
+                "If you are testing me, fair. Keep going and you will get your answer.",
+            ],
+            low,
+            avoid,
+        )
     if _explicit_en_switch(user_msg) or "english" in low:
         return _choose_variant(
             [
@@ -704,6 +1471,46 @@ def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         return "Yes, I am ready. Tell me the topic and we can start."
     if re.search(r"\b(previous chat|memory)\b", low):
         return "I can keep continuity from the active chat context. Long-term memory needs explicit storage."
+    if re.search(r"\b(one romantic line|romantic line|one line)\b", low):
+        return _choose_variant(
+            [
+                "You walked in, and even silence started smiling.",
+                "Stay close, your presence makes ordinary moments feel golden.",
+                "You speak softly, and somehow the whole room feels warmer.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(you miss me|miss me)\b", low):
+        return _choose_variant(
+            [
+                "Maybe a little. You do show up with interesting timing.",
+                "I noticed the silence, so yes, your return was felt.",
+                "I can pretend I did not, but that would be a lie.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(flirty|flirt|romantic line|romantic)\b", low):
+        return _choose_variant(
+            [
+                "You have a good smile hidden in that line. Keep talking.",
+                "Classy and flirty works. You set the tone, I will match it.",
+                "That energy suits you. Soft, playful, and a little dangerous.",
+            ],
+            low,
+            avoid,
+        )
+    if re.search(r"\b(love|relationship|relation ship|relatioship|rishta|pyar|pyaar)\b", low):
+        return _choose_variant(
+            [
+                "Love is care plus consistency, not just words. Trust and emotional safety make it real.",
+                "A healthy relationship stands on trust, respect, and clear communication.",
+                "Real connection is when both people feel seen, safe, and valued over time.",
+            ],
+            low,
+            avoid,
+        )
     if re.search(r"\b(calm tone|panic mode)\b", low):
         return "Understood, I will keep the tone calm and steady. I will stay direct and clear."
     if re.search(r"\b(mysterious|mystery|interesting)\b", low):
@@ -938,7 +1745,7 @@ def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
             low,
             avoid,
         )
-    if re.search(r"\b(day|how was your day)\b", low):
+    if re.search(r"\b(day|how was your day|how was your d[a-z]*|how's your day|hows your day)\b", low):
         return _choose_variant(
             [
                 "My day was good. How did your day go?",
@@ -961,9 +1768,9 @@ def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(help)\b", low):
         return _choose_variant(
             [
-                "Sure. Share one specific question and I will help directly.",
-                "Yes, I can help. Send the exact question in one line.",
-                "Absolutely. Tell me the exact issue and I will assist.",
+                "Sure. Tell me what is stuck and we can sort it.",
+                "Yes, I can help. Drop the issue and we will work through it.",
+                "Absolutely. Tell me what happened and I will help.",
             ],
             low,
             avoid,
@@ -971,17 +1778,24 @@ def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
     if re.search(r"\b(problem|issue|error|fix|not working|bug)\b", low):
         return _choose_variant(
             [
-                "Understood. Share exact steps and error text; I will give a quick fix.",
+                "Understood. Share the steps and error text; we will pin it down.",
                 "Got it. Send the error and reproduction steps, then I will suggest a fix.",
-                "Okay. Tell me what fails and the exact message, I will help troubleshoot.",
+                "Okay. Tell me what fails and I will help troubleshoot.",
             ],
             low,
             avoid,
         )
     variants = [
-        "Share one specific point and I will give a direct answer.",
-        "Give me the exact question and I will keep the reply practical.",
-        "Tell me the target outcome and I will suggest the next step.",
+        "I am here. Say it in your own way and we will continue.",
+        "Okay, keep it simple and tell me the main point.",
+        "I hear you. Start with what matters most right now.",
+        "We can sort this, just give me the core of it.",
+        "No rush, walk me through the part that feels heavy.",
+        "Fair, tell me the real point and we will keep moving.",
+        "Start from the most important bit and I will follow.",
+        "Drop the main line first, then we build from there.",
+        "Got you. Keep it natural and tell me what is bothering you.",
+        "We are good. Say the key part and I will respond clearly.",
     ]
     return _choose_variant(variants, low, avoid)
 
@@ -1023,13 +1837,30 @@ def _is_reply_bad(reply: str, lang_mode: str) -> bool:
         return True
     if re.fullmatch(r"['\"].{1,60}['\"]", text):
         return True
+    if re.search(
+        (
+            r"\b(short answer|factual question|verified detail|from a relationship lens|"
+            r"i can explain|let me explain|i can provide details|"
+            r"fast answer mode|quick take first)\b"
+        ),
+        low,
+    ):
+        return True
+    if re.search(
+        (
+            r"\b(seedha bol na, main sun raha hoon|thoda clear bol, pakad lunga|"
+            r"point direct rakh, baat easy ho jayegi|seedha sawal bhejo|"
+            r"ek seedha sawal pucho|share one specific question|send the exact question)\b"
+        ),
+        low,
+    ):
+        return True
     banned = [
         "how are you today",
         "what brings you here",
         "what brings me here",
         "what's new",
         "what is new",
-        "how was your day",
         "how can i assist you today",
         "what can i assist you with today",
         "i'm glad to help",
@@ -1048,6 +1879,9 @@ def _is_reply_bad(reply: str, lang_mode: str) -> bool:
         "kya halch",
         "i am listening. give me the real version.",
         "go on. short or messy, both work.",
+        "seedha bol na, main sun raha hoon.",
+        "thoda clear bol, pakad lunga.",
+        "point direct rakh, baat easy ho jayegi.",
     ]
     if any(p in low for p in banned):
         return True
@@ -1108,6 +1942,10 @@ def _is_wrong_language(reply: str, lang_mode: str) -> bool:
 
 def _safe_fallback(lang_mode: str, user_msg: str = "", avoid: str = "") -> str:
     low = (user_msg or "").lower()
+    if _is_identity_challenge(user_msg):
+        if lang_mode == "hi":
+            return _hindi_fallback_by_intent(user_msg, avoid)
+        return _english_fallback_by_intent(user_msg, avoid)
     if _explicit_hi_switch(user_msg):
         return "Bilkul, ab se main Roman Hindi me hi short aur clear jawab dunga."
     if _explicit_en_switch(user_msg) or "english" in low:
@@ -1136,16 +1974,16 @@ def _safe_fallback(lang_mode: str, user_msg: str = "", avoid: str = "") -> str:
         return _english_fallback_by_intent(user_msg, avoid)
     if "solution" in low or "explain" in low:
         if lang_mode == "hi":
-            return "Theek hai. Exact error aur steps bhejo, main simple Roman Hindi me solution dunga."
-        return "Sure. Share the exact error and steps, and I will explain the fix in simple English."
+            return "Theek hai. Exact error aur steps bhejo, main seedha fix bata dunga."
+        return "Sure. Share the exact error and steps, and I will give you a direct fix."
     if "fix" in low or "not working" in low or "issue" in low or "problem" in low:
         if lang_mode == "hi":
             return "Theek hai. Problem ka exact step likho, main seedha fix batata hun."
         return "Understood. Share the exact issue step-by-step and I will give a direct fix."
     if "madad" in low or "help" in low:
         if lang_mode == "hi":
-            return "Haan, bilkul. Apna sawal ek line me likho, main seedha madad karunga."
-        return "Yes. Share your exact question in one line and I will help directly."
+            return "Haan, bilkul. Jo dikkat hai woh likho, main madad karta hoon."
+        return "Yes. Tell me what is stuck and I will help."
     if lang_mode == "hi":
         return _hindi_fallback_by_intent(user_msg, avoid)
     return _english_fallback_by_intent(user_msg, avoid)
@@ -1156,6 +1994,8 @@ def _should_use_direct_intent_reply(user_msg: str, lang_mode: str) -> bool:
     if not low.strip():
         return False
     if _explicit_hi_switch(user_msg) or _explicit_en_switch(user_msg):
+        return True
+    if _is_identity_challenge(user_msg):
         return True
     if lang_mode == "hi" and _is_hi_smalltalk(user_msg) and len(user_msg.split()) <= 16:
         return True
@@ -1176,7 +2016,9 @@ def _should_use_direct_intent_reply(user_msg: str, lang_mode: str) -> bool:
                 r"ek bat|ak bat|pagal|tameez|tammej|mar ja|gaali|"
                 r"mere sath|mere saath|nhi kiya|nahi kiya|kuch nhi|kuch nahi|"
                 r"ladki|girl|impress|date|crush|patana|set|last line|close|closing|"
-                r"love you|i love you|bol du|bolu|rahega|rahenga|sahi rahega)\b"
+                r"love you|i love you|bol du|bolu|rahega|rahenga|sahi rahega|"
+                r"relationship|relation ship|love|pyar|pyaar|rishta|"
+                r"flirt|flirty|romantic|romance|tease|teasing|miss me)\b"
             ),
             low,
         )
@@ -1213,7 +2055,7 @@ def _score_reply(reply: str, user_msg: str, lang_mode: str) -> int:
 
     # Avoid overly generic question loops.
     low = text.lower()
-    if re.search(r"\b(how are you|what's new|what is new|how was your day|what brings you)\b", low):
+    if re.search(r"\b(how are you|what's new|what is new|what brings you)\b", low):
         score -= 20
     if "can't continue the conversation" in low or "another language" in low:
         score -= 30

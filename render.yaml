@@ -30,6 +30,8 @@ services:
         value: 4
       - key: RESPONSE_CHECKPOINTS
         value: 1
+      - key: DELIBERATE_HUMAN_MODE
+        value: 0
       - key: FAST_RESPONSE_DEADLINE_SECONDS
         value: 2.0
       - key: RUNTIME_START_WAIT_SECONDS
@@ -63,7 +65,7 @@ services:
       - key: RELATIONSHIP_BRIDGE_MODE
         value: 1
       - key: RELATIONSHIP_LEARNING_ON_CHAT
-        value: 1
+        value: 0
       - key: RELATIONSHIP_KB_PATH
         value: knowledge_relationship.json
       - key: RELATIONSHIP_KB_MAX_ITEMS
@@ -73,7 +75,7 @@ services:
       - key: ENABLE_LIMITS_GUARDRAILS
         value: 1
       - key: LIMITS_LEARNING_ON_CHAT
-        value: 1
+        value: 0
       - key: LIMITS_KB_PATH
         value: knowledge_limits.json
       - key: LIMITS_KB_MAX_ITEMS
@@ -81,7 +83,7 @@ services:
       - key: LIMITS_LEARNING_TIMEOUT_SECONDS
         value: 14
       - key: ENABLE_BACKGROUND_LEARNING
-        value: 1
+        value: 0
       - key: BACKGROUND_LEARNING_SLEEP_MINUTES
         value: 180
       - key: BACKGROUND_RELATIONSHIP_COUNT

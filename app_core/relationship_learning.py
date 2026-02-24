@@ -12,6 +12,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 
+from .vector_match import cosine_similarity, text_to_vector
+
 DEFAULT_KB_PATH = Path("knowledge_relationship.json")
 
 _ALLOWED_DOMAINS = {
@@ -264,26 +266,36 @@ async def _search_relationship_web(
     return _trim(best_snippet, 340), best_url
 
 
-def _score_item(question: str, msg_tokens: set[str], item: dict[str, Any]) -> float:
+def _score_item(
+    question: str,
+    msg_tokens: set[str],
+    question_vec: tuple[tuple[int, float], ...],
+    item: dict[str, Any],
+) -> float:
     q_text = str(item.get("question", ""))
+    a_text = str(item.get("answer", ""))
     q_tokens = _tokens(q_text)
-    a_tokens = _tokens(str(item.get("answer", "")))
+    a_tokens = _tokens(a_text)
     if not msg_tokens:
         return 0.0
     overlap_q = len(msg_tokens & q_tokens)
     overlap_all = len(msg_tokens & (q_tokens | a_tokens))
+    q_sim = cosine_similarity(question_vec, text_to_vector(q_text))
+    a_sim = cosine_similarity(question_vec, text_to_vector(a_text))
+    vec_sim = max(q_sim, a_sim)
     if overlap_q == 0 and overlap_all == 0:
-        return 0.0
+        if vec_sim < 0.52:
+            return 0.0
     q_cov = overlap_q / float(len(msg_tokens))
     all_cov = overlap_all / float(len(msg_tokens))
-    if len(msg_tokens) >= 2 and q_cov < 0.34 and all_cov < 0.50:
+    if len(msg_tokens) >= 2 and q_cov < 0.34 and all_cov < 0.50 and vec_sim < 0.55:
         return 0.0
     sim = difflib.SequenceMatcher(
         None,
         _normalize_key(question),
         _normalize_key(q_text),
     ).ratio()
-    return (q_cov * 0.70) + (all_cov * 0.20) + (sim * 0.10)
+    return (q_cov * 0.50) + (all_cov * 0.20) + (sim * 0.10) + (vec_sim * 0.20)
 
 
 def get_relationship_answer(
@@ -300,6 +312,7 @@ def get_relationship_answer(
         return "", ""
     key = _normalize_key(question)
     msg_tokens = _tokens(question)
+    question_vec = text_to_vector(question)
 
     # exact match first
     for item in reversed(items):
@@ -319,7 +332,7 @@ def get_relationship_answer(
 
     scored: list[tuple[float, dict[str, Any]]] = []
     for item in items:
-        s = _score_item(question, msg_tokens, item)
+        s = _score_item(question, msg_tokens, question_vec, item)
         if s <= 0:
             continue
         scored.append((s, item))

@@ -64,6 +64,7 @@ class Settings:
     enable_async_learning_on_chat: bool
     async_learning_max_concurrency: int
     ultra_fast_mode: bool
+    deliberate_human_mode: bool
     enable_web_fallback: bool
     web_lookup_for_facts: bool
     web_lookup_timeout_seconds: int
@@ -181,6 +182,10 @@ def load_settings() -> Settings:
         ),
         ultra_fast_mode=(
             os.getenv("ULTRA_FAST_MODE", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        ),
+        deliberate_human_mode=(
+            os.getenv("DELIBERATE_HUMAN_MODE", "1").strip().lower()
             not in {"0", "false", "no", "off"}
         ),
         enable_web_fallback=(

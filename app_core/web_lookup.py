@@ -42,6 +42,7 @@ _BAD_SOURCE_DOMAINS = {
     "instagram.com",
     "facebook.com",
     "pinterest.com",
+    "ilyricshub.com",
 }
 _RELEVANCE_STOPWORDS = {
     "what",
@@ -222,6 +223,18 @@ def should_try_web_lookup(
     if not low_m.strip():
         return False
 
+    conversational_hit = bool(
+        re.search(
+            (
+                r"\b(hello|hi|hey|kaise ho|kese ho|kya haal|haal chal|"
+                r"how are you|how was your day|you there|"
+                r"miss me|yaad aaya|miss kiya|flirt|flirty|romantic|shayari|shayri|"
+                r"tease|playful|mood|vibe|normal baat)\b"
+            ),
+            low_m,
+        )
+    )
+
     asks_internet = bool(
         re.search(
             r"\b(internet|web|online|latest|news|current|aaj ka|today|abhi ka|source)\b",
@@ -257,6 +270,8 @@ def should_try_web_lookup(
 
     if asks_internet:
         return True
+    if conversational_hit:
+        return False
     if asks_fact and is_question and always_for_facts:
         return True
     if is_question and (score < 20 or generic_reply or unknown_reply):

@@ -11,6 +11,7 @@ before returning final replies.
 - `POST /v1/chat-text` plain text endpoint
 - Dual-secret auth (`x-api-key` + `x-client-secret`) + rate limiting
 - Conversation guardrails: language control, anti-repeat fallback, intent checks
+- Dynamic mode tags: `[LOVELY] [HORROR] [SHAYARI] [CHILL] [POSSESSIVE] [NAUGHTY] [MYSTIC]`
 
 ## Code architecture
 
@@ -118,6 +119,26 @@ Long-memory version:
 ```powershell
 .\scripts\run_20_chat.ps1 -Turns 20 -MaxHistory 120
 ```
+
+### Big LLM terminal chat (Gemini-style context carry)
+
+Run direct 7B chat with automatic server startup + readiness check:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\chat_big_llm_terminal.ps1
+```
+
+This client sends, on every turn:
+- current `system instruction`
+- full rolling `history`
+- current user message
+
+So each next response is generated from system + history + new text together.
+
+Useful commands:
+- `/system <text>`: change system instruction live
+- `/reset`: clear chat history
+- `/exit`: quit session
 
 ### Automated quality checks
 
@@ -330,6 +351,10 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - Run bootstrap script
 - Start app with `uvicorn api_service:app`
 - Health check path: `/health`
+- Render profile is tuned for starter CPU:
+  - `ULTRA_FAST_MODE=1`
+  - `DELIBERATE_HUMAN_MODE=0`
+  - on-chat web learning loops disabled (`RELATIONSHIP_LEARNING_ON_CHAT=0`, `LIMITS_LEARNING_ON_CHAT=0`)
 
 ## Connect from any app
 

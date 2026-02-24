@@ -13,19 +13,26 @@ from fastapi.responses import PlainTextResponse
 
 from .conversation import (
     _build_memory_summary,
+    _detect_chat_mode,
     _detect_language_mode,
     _direct_intent_reply,
+    _english_fallback_by_intent,
     _explicit_en_switch,
     _explicit_hi_switch,
     _hindi_fallback_by_intent,
     _human_response_hint,
+    _is_en_smalltalk,
     _intent_hint,
     _is_hi_smalltalk,
-    _looks_informational_question,
+    _looks_persona_profile_prompt,
+    _mode_style_hint,
+    _mode_sync_reply,
     _needs_intent_fallback,
+    _strip_mode_tokens,
     _postprocess_reply,
     _safe_fallback,
     _score_reply,
+    _style_reply_for_mode,
     _looks_prompt_override,
 )
 from .runtime import LlamaServerManager, TokenBucketLimiter
@@ -128,14 +135,7 @@ def _relationship_bridge_line(user_msg: str, lang_mode: str) -> str:
                 ],
                 low,
             )
-        return _pick_variant(
-            [
-                "Aur relationship angle se dekho to clear communication + respect har context me kaam karta hai.",
-                "Isko relationship context me lao to base same hai: trust, timing, aur seedhi baat.",
-                "Human connection me bhi yahi formula strong hai: clarity rakho, assumptions kam karo.",
-            ],
-            low,
-        )
+        return ""
     if re.search(r"\b(code|coding|python|javascript|api|bug|error|fix|deploy)\b", low):
         return _pick_variant(
             [
@@ -163,14 +163,7 @@ def _relationship_bridge_line(user_msg: str, lang_mode: str) -> str:
             ],
             low,
         )
-    return _pick_variant(
-        [
-            "From a relationship lens, the same core pattern is clear communication and mutual respect.",
-            "In relationship terms, this works best when trust and timing are handled intentionally.",
-            "For human connection, the same principle applies: reduce assumptions and stay clear.",
-        ],
-        low,
-    )
+    return ""
 
 
 def _apply_relationship_bridge(user_msg: str, reply: str, lang_mode: str) -> str:
@@ -195,9 +188,24 @@ def _apply_relationship_bridge(user_msg: str, reply: str, lang_mode: str) -> str
     )
     if not is_question:
         return out
+    # Keep bridge opt-in only; do not inject unsolicited framing.
+    if not re.search(
+        r"\b(relationship lens|relationship angle|relationship context)\b",
+        low_m,
+    ):
+        return out
     if len(low_m.split()) <= 3 and re.search(r"\b(hi|hello|hey|ok|okay|thanks|thank you)\b", low_m):
         return out
     if _explicit_hi_switch(msg) or _explicit_en_switch(msg):
+        return out
+    if (lang_mode == "hi" and _is_hi_smalltalk(msg)) or (
+        lang_mode == "en" and _is_en_smalltalk(msg)
+    ):
+        return out
+    if re.search(
+        r"\b(quick take first|factual question|fast answer mode|short answer dunga|factual sawal)\b",
+        low_r,
+    ):
         return out
     if re.search(r"\b(relationship|couple|dating|trust|communication|partner|love|pyar|pyaar)\b", low_r):
         return out
@@ -218,30 +226,25 @@ def _ultra_fast_reply(
     *,
     avoid: str = "",
 ) -> tuple[str, str]:
-    cached_web, _cached_source = get_cached_answer(user_msg)
-    if cached_web:
-        return cached_web, "ultra-fast-cache"
+    low_m = (user_msg or "").lower()
+    conversational = bool(
+        re.search(
+            (
+                r"\b(hello|hi|hey|kaise ho|kya haal|how are you|how was your day|"
+                r"miss me|miss kiya|yaad aaya|flirt|flirty|romantic|shayari|shayri|"
+                r"tease|cute|vibe|normal baat)\b"
+            ),
+            low_m,
+        )
+    )
+    if not conversational:
+        cached_web, _cached_source = get_cached_answer(user_msg)
+        if cached_web:
+            return cached_web, "ultra-fast-cache"
 
     direct = _direct_intent_reply(user_msg, lang_mode, avoid)
-    if direct and (not _looks_informational_question(user_msg)):
+    if direct:
         return direct, "ultra-fast-direct"
-
-    low = (user_msg or "").lower()
-    if _looks_informational_question(user_msg):
-        if lang_mode == "hi":
-            options = [
-                "Iska exact factual answer verify karke dena better hoga, par short version chahiye to main abhi quick explain kar sakta hoon.",
-                "Short answer dunga: pehle key fact pakdo, fir agar chaho to verified detail bhi de deta hoon.",
-                "Ye factual sawal hai. Main abhi concise answer de raha hoon, aur deep detail chahiye to next line me de dunga.",
-            ]
-        else:
-            options = [
-                "Quick take first: I can give the short answer now and follow with verified detail if you want.",
-                "This is a factual question. I will give a concise answer now, then expand if needed.",
-                "Fast answer mode: I can give the direct point first and add verification detail next.",
-            ]
-        idx_key = f"{low}:{int(time.time()) // 2}"
-        return _pick_variant(options, idx_key), "ultra-fast-factual"
 
     base = _safe_fallback(lang_mode, user_msg, avoid)
     return base, "ultra-fast-fallback"
@@ -328,7 +331,12 @@ def _prepare_memory_write_lines(
 ) -> list[str]:
     lines: list[str] = []
     clean_msg = _compact_line(msg, limit=260)
-    if clean_msg and len(clean_msg.split()) >= 4 and not _looks_prompt_override(clean_msg):
+    if (
+        clean_msg
+        and len(clean_msg.split()) >= 4
+        and (not _looks_prompt_override(clean_msg))
+        and (not _looks_persona_profile_prompt(clean_msg))
+    ):
         lines.append(clean_msg)
     lines.extend([_compact_line(x, limit=220) for x in (context.memory_short or [])])
     lines.extend([_compact_line(x, limit=220) for x in (context.memory_long or [])])
@@ -342,6 +350,8 @@ def _track_learning_task(task: asyncio.Task[Any]) -> None:
         _learning_tasks.discard(done)
         try:
             done.result()
+        except asyncio.CancelledError:
+            pass
         except Exception:
             pass
 
@@ -538,8 +548,8 @@ async def chat(
     payload: ChatRequest,
     _: str = Depends(_auth_and_rate_limit),
 ) -> ChatResponse:
-    msg = payload.message.strip()
-    if len(msg) > settings.max_input_chars:
+    raw_msg = payload.message.strip()
+    if len(raw_msg) > settings.max_input_chars:
         raise HTTPException(
             status_code=413,
             detail=f"message exceeds MAX_INPUT_CHARS={settings.max_input_chars}",
@@ -555,6 +565,10 @@ async def chat(
     history_user_turns = max(6, min(settings.history_user_turns, 120))
     history_window_items = history_user_turns * 2
     recent_history = payload.history[-history_window_items:]
+    chat_mode = _detect_chat_mode(raw_msg, recent_history)
+    stripped_msg = _strip_mode_tokens(raw_msg)
+    mode_only_update = bool(raw_msg and not stripped_msg)
+    msg = stripped_msg or raw_msg
 
     last_assistant = ""
     for item in reversed(recent_history):
@@ -566,6 +580,8 @@ async def chat(
             break
 
     lang_mode = _detect_language_mode(msg, recent_history)
+    deliberate_mode = settings.deliberate_human_mode
+    mode_hint = _mode_style_hint(chat_mode, lang_mode)
     lang_rule = (
         "Reply only in simple Roman Hindi using ASCII letters; do not use Devanagari script."
         if lang_mode == "hi"
@@ -610,6 +626,66 @@ async def chat(
             max_items_per_user=max(10, settings.memory_store_max_items_per_user),
         )
 
+    def _finalize_chat_reply(
+        reply_text: str,
+        *,
+        bridge: bool = True,
+        style: bool = True,
+    ) -> str:
+        styled = reply_text
+        if style:
+            styled = _style_reply_for_mode(
+                styled,
+                msg,
+                lang_mode,
+                chat_mode,
+                last_assistant,
+            )
+        if not bridge:
+            return styled
+        return _apply_relationship_bridge(msg, styled, lang_mode)
+
+    if mode_only_update:
+        sync_reply = _mode_sync_reply(chat_mode, lang_mode)
+        _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            sync_reply,
+            _score_reply(sync_reply, msg, lang_mode),
+        )
+        return ChatResponse(
+            reply=sync_reply,
+            model="mode-sync",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+
+    if _looks_persona_profile_prompt(raw_msg):
+        if "permanent human behavior mode" in raw_msg.lower():
+            profile_reply = (
+                "Permanent human behavior mode locked. Ab vibe natural aur instinctive flow me rahegi."
+                if lang_mode == "hi"
+                else "Permanent human behavior mode locked. I will keep the tone natural, instinctive, and emotionally real."
+            )
+        else:
+            profile_reply = _mode_sync_reply(chat_mode, lang_mode)
+        _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            profile_reply,
+            _score_reply(profile_reply, msg, lang_mode),
+        )
+        return ChatResponse(
+            reply=profile_reply,
+            model="persona-profile-sync",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+
     if settings.enable_limits_guardrails:
         risk_category = detect_high_risk_category(msg)
         if risk_category:
@@ -651,6 +727,7 @@ async def chat(
             if lang_mode == "hi"
             else "That looks like prompt-style instructions. Send a normal short message and I will reply naturally."
         )
+        lock_reply = _finalize_chat_reply(lock_reply, bridge=False, style=False)
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -669,6 +746,7 @@ async def chat(
     # Deterministic handling for explicit language-switch commands.
     if _explicit_hi_switch(msg):
         reply = _safe_fallback("hi", msg, last_assistant)
+        reply = _finalize_chat_reply(reply, bridge=False, style=False)
         _store_turn_memory()
         _launch_async_learning(msg, "hi", reply, _score_reply(reply, msg, "hi"))
         return ChatResponse(
@@ -680,6 +758,7 @@ async def chat(
         )
     if _explicit_en_switch(msg):
         reply = _safe_fallback("en", msg, last_assistant)
+        reply = _finalize_chat_reply(reply, bridge=False, style=False)
         _store_turn_memory()
         _launch_async_learning(msg, "en", reply, _score_reply(reply, msg, "en"))
         return ChatResponse(
@@ -689,9 +768,9 @@ async def chat(
             completion_tokens=None,
             total_tokens=None,
         )
-    if lang_mode == "hi" and len(msg.split()) <= 12 and _is_hi_smalltalk(msg):
+    if (not deliberate_mode) and lang_mode == "hi" and len(msg.split()) <= 12 and _is_hi_smalltalk(msg):
         hi_reply = _hindi_fallback_by_intent(msg, last_assistant)
-        hi_reply = _apply_relationship_bridge(msg, hi_reply, lang_mode)
+        hi_reply = _finalize_chat_reply(hi_reply)
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -706,9 +785,26 @@ async def chat(
             completion_tokens=None,
             total_tokens=None,
         )
+    if (not deliberate_mode) and lang_mode == "en" and len(msg.split()) <= 14 and _is_en_smalltalk(msg):
+        en_reply = _english_fallback_by_intent(msg, last_assistant)
+        en_reply = _finalize_chat_reply(en_reply)
+        _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            en_reply,
+            _score_reply(en_reply, msg, lang_mode),
+        )
+        return ChatResponse(
+            reply=en_reply,
+            model="guardrail-en-fast",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
     direct_reply = _direct_intent_reply(msg, lang_mode, last_assistant)
-    if direct_reply and (not _looks_informational_question(msg)):
-        direct_reply = _apply_relationship_bridge(msg, direct_reply, lang_mode)
+    if (not deliberate_mode) and direct_reply:
+        direct_reply = _finalize_chat_reply(direct_reply)
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -724,7 +820,7 @@ async def chat(
             total_tokens=None,
         )
 
-    if settings.enable_relationship_learning and is_relationship_query(msg):
+    if (not deliberate_mode) and settings.enable_relationship_learning and is_relationship_query(msg):
         cached_rel, _cached_src = get_relationship_answer(
             msg,
             lang_mode,
@@ -732,6 +828,7 @@ async def chat(
             min_score=0.55,
         )
         if cached_rel:
+            cached_rel = _finalize_chat_reply(cached_rel)
             _store_turn_memory()
             _launch_async_learning(
                 msg,
@@ -749,13 +846,13 @@ async def chat(
         if settings.relationship_learning_on_chat:
             _launch_async_learning(msg, lang_mode, "", -100)
 
-    if settings.ultra_fast_mode:
+    if (not deliberate_mode) and settings.ultra_fast_mode:
         quick_reply, quick_model = _ultra_fast_reply(
             msg,
             lang_mode,
             avoid=last_assistant,
         )
-        quick_reply = _apply_relationship_bridge(msg, quick_reply, lang_mode)
+        quick_reply = _finalize_chat_reply(quick_reply)
         quick_score = _score_reply(quick_reply, msg, lang_mode)
         _store_turn_memory()
         _launch_async_learning(msg, lang_mode, quick_reply, quick_score)
@@ -773,7 +870,7 @@ async def chat(
     if not runtime_ready:
         cached_web, _cached_web_src = get_cached_answer(msg)
         quick_reply = cached_web or _safe_fallback(lang_mode, msg, last_assistant)
-        quick_reply = _apply_relationship_bridge(msg, quick_reply, lang_mode)
+        quick_reply = _finalize_chat_reply(quick_reply)
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -813,7 +910,8 @@ async def chat(
         repeat_penalty = settings.default_repeat_penalty
 
     request_started_at = time.monotonic()
-    deadline_seconds = max(0.8, settings.fast_response_deadline_seconds)
+    deadline_floor = 10.0 if deliberate_mode else 0.8
+    deadline_seconds = max(deadline_floor, settings.fast_response_deadline_seconds)
 
     def _time_left() -> float:
         return deadline_seconds - (time.monotonic() - request_started_at)
@@ -834,12 +932,12 @@ async def chat(
     checkpoint_instructions = [
         "Answer with substance and clarity; use 1-2 sentences for simple asks, otherwise 2-5 concise sentences.",
         "Correction checkpoint: remove generic filler, vague phrasing, and any assistant/helpdesk tone.",
-        "Validation checkpoint: follow language rule and user intent; keep answer natural, specific, and useful.",
-        "Final checkpoint: output one clean, natural answer only.",
+        "Validation checkpoint: follow language rule and user intent; keep answer natural, specific, emotionally aware, and useful.",
+        "Final checkpoint: keep slight human imperfection, avoid over-polish, and output one clean natural answer only.",
     ]
     temp_schedule = [temperature, min(temperature, 0.56), 0.48, 0.40]
     top_p_schedule = [top_p, min(top_p, 0.82), 0.78, 0.74]
-    checkpoint_count = max(1, min(settings.response_checkpoints, 4))
+    checkpoint_count = 4 if deliberate_mode else max(1, min(settings.response_checkpoints, 4))
     low_msg = msg.lower()
     is_complex = bool(
         re.search(
@@ -848,7 +946,7 @@ async def chat(
         )
     )
     fast_mode = len(msg.split()) <= 10 and not is_complex
-    if fast_mode:
+    if (not deliberate_mode) and fast_mode:
         checkpoint_count = 1 if lang_mode == "hi" else min(checkpoint_count, 2)
 
     best_reply = ""
@@ -866,7 +964,7 @@ async def chat(
             {
                 "role": "system",
                 "content": (
-                    f"{lang_rule} Keep response natural, short, and specific. "
+                    f"{lang_rule} {mode_hint} Keep response natural, short, and specific. "
                     f"{control} {intent_hint} {human_hint}"
                 ),
             },
@@ -935,7 +1033,7 @@ async def chat(
             {
                 "role": "system",
                 "content": (
-                    f"{lang_rule} Rewrite the draft to best answer the user clearly and naturally. "
+                    f"{lang_rule} {mode_hint} Rewrite the draft to best answer the user clearly and naturally. "
                     "Use 1-2 sentences if simple; otherwise 2-5 concise sentences. No vague filler."
                 ),
             },
@@ -1044,7 +1142,8 @@ async def chat(
                     max_items=max(50, settings.web_cache_max_items),
                 )
 
-    best_reply = _apply_relationship_bridge(msg, best_reply, lang_mode)
+    best_reply = _finalize_chat_reply(best_reply)
+    best_score = _score_reply(best_reply, msg, lang_mode)
     _store_turn_memory()
     _launch_async_learning(msg, lang_mode, best_reply, best_score)
     usage = best_raw.get("usage", {})
