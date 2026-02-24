@@ -164,12 +164,12 @@ def load_settings() -> Settings:
         response_checkpoints=int(os.getenv("RESPONSE_CHECKPOINTS", "2")),
         history_user_turns=int(os.getenv("HISTORY_USER_TURNS", "40")),
         memory_summary_items=int(os.getenv("MEMORY_SUMMARY_ITEMS", "10")),
-        request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120")),
+        request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "300")),
         fast_response_deadline_seconds=float(
-            os.getenv("FAST_RESPONSE_DEADLINE_SECONDS", "2.0")
+            os.getenv("FAST_RESPONSE_DEADLINE_SECONDS", "90.0")
         ),
         runtime_start_wait_seconds=float(
-            os.getenv("RUNTIME_START_WAIT_SECONDS", "1.0")
+            os.getenv("RUNTIME_START_WAIT_SECONDS", "240.0")
         ),
         rate_limit_rpm=int(os.getenv("RATE_LIMIT_RPM", "60")),
         rate_limit_burst=int(os.getenv("RATE_LIMIT_BURST", "20")),
@@ -181,7 +181,7 @@ def load_settings() -> Settings:
             os.getenv("ASYNC_LEARNING_MAX_CONCURRENCY", "1")
         ),
         ultra_fast_mode=(
-            os.getenv("ULTRA_FAST_MODE", "1").strip().lower()
+            os.getenv("ULTRA_FAST_MODE", "0").strip().lower()
             not in {"0", "false", "no", "off"}
         ),
         deliberate_human_mode=(

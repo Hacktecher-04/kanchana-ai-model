@@ -533,14 +533,21 @@ def _cleanup() -> None:
 @app.get("/health")
 async def health() -> dict[str, str]:
     if settings.ultra_fast_mode:
-        return {"status": "ok", "llm": "bypassed"}
+        return {
+            "status": "ok",
+            "llm": "bypassed",
+            "reason": "ULTRA_FAST_MODE=1",
+        }
     if _runtime_is_running():
         llm = "ready"
     elif _runtime_last_error:
         llm = "error"
     else:
         llm = "starting"
-    return {"status": "ok", "llm": llm}
+    out: dict[str, str] = {"status": "ok", "llm": llm}
+    if llm == "error":
+        out["reason"] = _runtime_last_error[:240]
+    return out
 
 
 @app.post("/v1/chat", response_model=ChatResponse)
