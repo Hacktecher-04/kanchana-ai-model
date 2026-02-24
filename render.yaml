@@ -19,25 +19,29 @@ services:
       - key: LLAMA_SERVER_PATH
         value: bin/llama-cpp/llama-server
       - key: LLAMA_HF_REPO
-        value: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+        value: Qwen/Qwen2.5-7B-Instruct-GGUF
       - key: LLAMA_HF_FILE
-        value: qwen2.5-0.5b-instruct-q4_k_m.gguf
+        value: qwen2.5-7b-instruct-q3_k_m.gguf
+      - key: LLAMA_MODEL_PATH
+        value: models/qwen2.5-7b-instruct-q3_k_m.gguf
+      - key: LLAMA_MODEL_URL
+        value: https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q3_k_m.gguf?download=true
       - key: SYSTEM_PROMPT_FILE
         value: prompts/system_prompt.txt
       - key: LLAMA_CTX
         value: 1024
       - key: LLAMA_THREADS
-        value: 4
+        value: 8
       - key: RESPONSE_CHECKPOINTS
         value: 2
       - key: DELIBERATE_HUMAN_MODE
         value: 1
       - key: REQUEST_TIMEOUT_SECONDS
-        value: 300
+        value: 600
       - key: FAST_RESPONSE_DEADLINE_SECONDS
-        value: 45.0
+        value: 120.0
       - key: RUNTIME_START_WAIT_SECONDS
-        value: 90.0
+        value: 240.0
       - key: ENABLE_ASYNC_LEARNING_ON_CHAT
         value: 0
       - key: ASYNC_LEARNING_MAX_CONCURRENCY
@@ -47,7 +51,11 @@ services:
       - key: MAX_INPUT_CHARS
         value: 2000
       - key: MAX_OUTPUT_TOKENS
-        value: 48
+        value: 220
+      - key: DEFAULT_TEMPERATURE
+        value: 0.60
+      - key: DEFAULT_TOP_P
+        value: 0.90
       - key: DEFAULT_REPEAT_PENALTY
         value: 1.25
       - key: RATE_LIMIT_RPM

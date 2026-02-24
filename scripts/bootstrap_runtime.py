@@ -98,20 +98,33 @@ def ensure_llama_server() -> None:
 
 def ensure_model() -> None:
     hf_repo = os.getenv("LLAMA_HF_REPO", "").strip()
+    hf_file = os.getenv("LLAMA_HF_FILE", "").strip()
     model_path_raw = os.getenv("LLAMA_MODEL_PATH", "").strip()
     if not model_path_raw and hf_repo:
         print(f"Skipping local model download; using HF repo: {hf_repo}")
         return
 
     model_path = Path(model_path_raw or "models/qwen2.5-0.5b-instruct-q4_k_m.gguf")
-    model_url = os.getenv(
-        "LLAMA_MODEL_URL",
-        "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true",
-    ).strip()
 
     if model_path.exists():
         print(f"Model already exists: {model_path}")
         return
+
+    model_url = os.getenv("LLAMA_MODEL_URL", "").strip()
+    if not model_url and hf_repo and hf_file:
+        model_url = (
+            f"https://huggingface.co/{hf_repo}/resolve/main/{hf_file}?download=true"
+        )
+    if not model_url and model_path_raw:
+        raise RuntimeError(
+            "LLAMA_MODEL_URL is required when LLAMA_MODEL_PATH is set and the file "
+            "is not already present."
+        )
+    if not model_url:
+        model_url = (
+            "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/"
+            "qwen2.5-0.5b-instruct-q4_k_m.gguf?download=true"
+        )
 
     download(model_url, model_path)
 

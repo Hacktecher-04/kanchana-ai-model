@@ -89,6 +89,7 @@ Minimum required values:
 - `LLAMA_INTERNAL_API_KEY`
 - `LLAMA_SERVER_PATH`
 - `LLAMA_MODEL_PATH` (or `LLAMA_HF_REPO` + `LLAMA_HF_FILE`)
+- `LLAMA_MODEL_URL` (required when `LLAMA_MODEL_PATH` file is missing on disk)
 
 ### 4) Run API
 
@@ -351,11 +352,13 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - Run bootstrap script
 - Start app with `uvicorn api_service:app`
 - Health check path: `/health`
-- Render profile is tuned for starter CPU:
-  - `ULTRA_FAST_MODE=0` (prefer real model generation over deterministic shortcuts)
-  - `DELIBERATE_HUMAN_MODE=1` (stronger conversational continuity)
+- Render profile is configured for `qwen2.5-7b-instruct-q3_k_m.gguf`:
+  - `LLAMA_MODEL_PATH=models/qwen2.5-7b-instruct-q3_k_m.gguf`
+  - `LLAMA_MODEL_URL` points to Qwen 7B GGUF download
+  - `ULTRA_FAST_MODE=0` and `DELIBERATE_HUMAN_MODE=1` for real model replies
   - larger runtime/deadline waits for cold start and first inference
   - on-chat learning loops disabled (`RELATIONSHIP_LEARNING_ON_CHAT=0`, `LIMITS_LEARNING_ON_CHAT=0`)
+  - if startup fails with OOM, increase Render instance memory
 
 ## Connect from any app
 
