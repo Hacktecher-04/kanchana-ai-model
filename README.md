@@ -285,6 +285,7 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - `RUNTIME_START_WAIT_SECONDS`: max time to wait for runtime startup on a request before fast fallback
 - `ENABLE_ASYNC_LEARNING_ON_CHAT`: keep learning in background without blocking user response
 - `ASYNC_LEARNING_MAX_CONCURRENCY`: async learning parallelism (keep `1` on small CPU)
+- `ULTRA_FAST_MODE`: bypass heavy generation path and return fast deterministic replies while learning continues in background
 - `HISTORY_USER_TURNS`: memory window size
 - `MEMORY_SUMMARY_ITEMS`: compact memory summary size
 - `MAX_INPUT_CHARS`, `MAX_OUTPUT_TOKENS`: request/response caps

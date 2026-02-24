@@ -63,6 +63,7 @@ class Settings:
     rate_limit_burst: int
     enable_async_learning_on_chat: bool
     async_learning_max_concurrency: int
+    ultra_fast_mode: bool
     enable_web_fallback: bool
     web_lookup_for_facts: bool
     web_lookup_timeout_seconds: int
@@ -177,6 +178,10 @@ def load_settings() -> Settings:
         ),
         async_learning_max_concurrency=int(
             os.getenv("ASYNC_LEARNING_MAX_CONCURRENCY", "1")
+        ),
+        ultra_fast_mode=(
+            os.getenv("ULTRA_FAST_MODE", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
         ),
         enable_web_fallback=(
             os.getenv("ENABLE_WEB_FALLBACK", "1").strip().lower()

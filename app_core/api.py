@@ -212,6 +212,41 @@ def _apply_relationship_bridge(user_msg: str, reply: str, lang_mode: str) -> str
     return final_text
 
 
+def _ultra_fast_reply(
+    user_msg: str,
+    lang_mode: str,
+    *,
+    avoid: str = "",
+) -> tuple[str, str]:
+    cached_web, _cached_source = get_cached_answer(user_msg)
+    if cached_web:
+        return cached_web, "ultra-fast-cache"
+
+    direct = _direct_intent_reply(user_msg, lang_mode, avoid)
+    if direct and (not _looks_informational_question(user_msg)):
+        return direct, "ultra-fast-direct"
+
+    low = (user_msg or "").lower()
+    if _looks_informational_question(user_msg):
+        if lang_mode == "hi":
+            options = [
+                "Iska exact factual answer verify karke dena better hoga, par short version chahiye to main abhi quick explain kar sakta hoon.",
+                "Short answer dunga: pehle key fact pakdo, fir agar chaho to verified detail bhi de deta hoon.",
+                "Ye factual sawal hai. Main abhi concise answer de raha hoon, aur deep detail chahiye to next line me de dunga.",
+            ]
+        else:
+            options = [
+                "Quick take first: I can give the short answer now and follow with verified detail if you want.",
+                "This is a factual question. I will give a concise answer now, then expand if needed.",
+                "Fast answer mode: I can give the direct point first and add verification detail next.",
+            ]
+        idx_key = f"{low}:{int(time.time()) // 2}"
+        return _pick_variant(options, idx_key), "ultra-fast-factual"
+
+    base = _safe_fallback(lang_mode, user_msg, avoid)
+    return base, "ultra-fast-fallback"
+
+
 def _compact_line(text: str, *, limit: int) -> str:
     cleaned = re.sub(r"\s+", " ", (text or "").strip())
     if not cleaned:
@@ -427,10 +462,11 @@ async def _ensure_runtime_started(max_wait_seconds: Optional[float] = None) -> b
 @app.on_event("startup")
 async def _startup() -> None:
     global _background_learning_task, _background_learning_stop_event, _runtime_boot_task
-    _runtime_boot_task = asyncio.create_task(
-        _ensure_runtime_started(),
-        name="llama-runtime-startup",
-    )
+    if not settings.ultra_fast_mode:
+        _runtime_boot_task = asyncio.create_task(
+            _ensure_runtime_started(),
+            name="llama-runtime-startup",
+        )
     if settings.enable_background_learning:
         _background_learning_stop_event = asyncio.Event()
         _background_learning_task = asyncio.create_task(
@@ -486,6 +522,8 @@ def _cleanup() -> None:
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    if settings.ultra_fast_mode:
+        return {"status": "ok", "llm": "bypassed"}
     if _runtime_is_running():
         llm = "ready"
     elif _runtime_last_error:
@@ -500,10 +538,6 @@ async def chat(
     payload: ChatRequest,
     _: str = Depends(_auth_and_rate_limit),
 ) -> ChatResponse:
-    runtime_ready = await _ensure_runtime_started(
-        max_wait_seconds=max(0.2, settings.runtime_start_wait_seconds)
-    )
-
     msg = payload.message.strip()
     if len(msg) > settings.max_input_chars:
         raise HTTPException(
@@ -715,6 +749,27 @@ async def chat(
         if settings.relationship_learning_on_chat:
             _launch_async_learning(msg, lang_mode, "", -100)
 
+    if settings.ultra_fast_mode:
+        quick_reply, quick_model = _ultra_fast_reply(
+            msg,
+            lang_mode,
+            avoid=last_assistant,
+        )
+        quick_reply = _apply_relationship_bridge(msg, quick_reply, lang_mode)
+        quick_score = _score_reply(quick_reply, msg, lang_mode)
+        _store_turn_memory()
+        _launch_async_learning(msg, lang_mode, quick_reply, quick_score)
+        return ChatResponse(
+            reply=quick_reply,
+            model=quick_model,
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+
+    runtime_ready = await _ensure_runtime_started(
+        max_wait_seconds=max(0.2, settings.runtime_start_wait_seconds)
+    )
     if not runtime_ready:
         cached_web, _cached_web_src = get_cached_answer(msg)
         quick_reply = cached_web or _safe_fallback(lang_mode, msg, last_assistant)
