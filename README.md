@@ -355,6 +355,8 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - Render profile is configured for `qwen2.5-7b-instruct-q3_k_m.gguf`:
   - service name: `kanchana-ai-model` (matches `https://kanchana-ai-model.onrender.com`)
   - plan: `pro plus` (7B GGUF CPU load needs high RAM)
+  - `LLAMA_CTX=4096` (required; `1024` causes prompt context overflow and fast fallback)
+  - `LLAMA_BATCH=128`, `LLAMA_UBATCH=64` for safer memory profile
   - `LLAMA_MODEL_PATH=models/qwen2.5-7b-instruct-q3_k_m.gguf`
   - `LLAMA_MODEL_URL` points to Qwen 7B GGUF download
   - `ULTRA_FAST_MODE=0` and `DELIBERATE_HUMAN_MODE=1` for real model replies

@@ -29,7 +29,11 @@ services:
       - key: SYSTEM_PROMPT_FILE
         value: prompts/system_prompt.txt
       - key: LLAMA_CTX
-        value: 1024
+        value: 4096
+      - key: LLAMA_BATCH
+        value: 128
+      - key: LLAMA_UBATCH
+        value: 64
       - key: LLAMA_THREADS
         value: 8
       - key: RESPONSE_CHECKPOINTS
