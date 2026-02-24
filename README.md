@@ -352,9 +352,10 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - Start app with `uvicorn api_service:app`
 - Health check path: `/health`
 - Render profile is tuned for starter CPU:
-  - `ULTRA_FAST_MODE=1`
-  - `DELIBERATE_HUMAN_MODE=0`
-  - on-chat web learning loops disabled (`RELATIONSHIP_LEARNING_ON_CHAT=0`, `LIMITS_LEARNING_ON_CHAT=0`)
+  - `ULTRA_FAST_MODE=0` (prefer real model generation over deterministic shortcuts)
+  - `DELIBERATE_HUMAN_MODE=1` (stronger conversational continuity)
+  - larger runtime/deadline waits for cold start and first inference
+  - on-chat learning loops disabled (`RELATIONSHIP_LEARNING_ON_CHAT=0`, `LIMITS_LEARNING_ON_CHAT=0`)
 
 ## Connect from any app
 

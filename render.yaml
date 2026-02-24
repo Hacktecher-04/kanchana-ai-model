@@ -29,19 +29,21 @@ services:
       - key: LLAMA_THREADS
         value: 4
       - key: RESPONSE_CHECKPOINTS
-        value: 1
+        value: 2
       - key: DELIBERATE_HUMAN_MODE
-        value: 0
-      - key: FAST_RESPONSE_DEADLINE_SECONDS
-        value: 2.0
-      - key: RUNTIME_START_WAIT_SECONDS
-        value: 1.0
-      - key: ENABLE_ASYNC_LEARNING_ON_CHAT
         value: 1
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: 300
+      - key: FAST_RESPONSE_DEADLINE_SECONDS
+        value: 45.0
+      - key: RUNTIME_START_WAIT_SECONDS
+        value: 90.0
+      - key: ENABLE_ASYNC_LEARNING_ON_CHAT
+        value: 0
       - key: ASYNC_LEARNING_MAX_CONCURRENCY
         value: 1
       - key: ULTRA_FAST_MODE
-        value: 1
+        value: 0
       - key: MAX_INPUT_CHARS
         value: 2000
       - key: MAX_OUTPUT_TOKENS
@@ -53,7 +55,7 @@ services:
       - key: RATE_LIMIT_BURST
         value: 20
       - key: ENABLE_WEB_FALLBACK
-        value: 1
+        value: 0
       - key: WEB_LOOKUP_FOR_FACTS
         value: 1
       - key: WEB_LOOKUP_TIMEOUT_SECONDS

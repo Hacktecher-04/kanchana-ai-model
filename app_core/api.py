@@ -886,17 +886,21 @@ async def chat(
             total_tokens=None,
         )
 
-    # Keep only user history to avoid feeding back low-quality assistant generations.
+    # Carry both user and assistant turns for better continuity in multi-turn chat.
     sanitized_history: list[dict[str, str]] = []
     for item in recent_history:
-        if item.role != "user":
+        if item.role not in {"user", "assistant"}:
             continue
         content = item.content.strip()
         if not content:
             continue
-        if sanitized_history and sanitized_history[-1]["content"].lower() == content.lower():
+        if (
+            sanitized_history
+            and sanitized_history[-1]["role"] == item.role
+            and sanitized_history[-1]["content"].lower() == content.lower()
+        ):
             continue
-        sanitized_history.append({"role": "user", "content": content})
+        sanitized_history.append({"role": item.role, "content": content})
 
     max_tokens = payload.max_tokens or settings.max_output_tokens
     temperature = payload.temperature
@@ -937,7 +941,11 @@ async def chat(
     ]
     temp_schedule = [temperature, min(temperature, 0.56), 0.48, 0.40]
     top_p_schedule = [top_p, min(top_p, 0.82), 0.78, 0.74]
-    checkpoint_count = 4 if deliberate_mode else max(1, min(settings.response_checkpoints, 4))
+    checkpoint_count = (
+        max(2, min(settings.response_checkpoints, 4))
+        if deliberate_mode
+        else max(1, min(settings.response_checkpoints, 4))
+    )
     low_msg = msg.lower()
     is_complex = bool(
         re.search(
