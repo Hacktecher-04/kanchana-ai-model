@@ -57,8 +57,12 @@ class Settings:
     history_user_turns: int
     memory_summary_items: int
     request_timeout_seconds: int
+    fast_response_deadline_seconds: float
+    runtime_start_wait_seconds: float
     rate_limit_rpm: int
     rate_limit_burst: int
+    enable_async_learning_on_chat: bool
+    async_learning_max_concurrency: int
     enable_web_fallback: bool
     web_lookup_for_facts: bool
     web_lookup_timeout_seconds: int
@@ -159,8 +163,21 @@ def load_settings() -> Settings:
         history_user_turns=int(os.getenv("HISTORY_USER_TURNS", "40")),
         memory_summary_items=int(os.getenv("MEMORY_SUMMARY_ITEMS", "10")),
         request_timeout_seconds=int(os.getenv("REQUEST_TIMEOUT_SECONDS", "120")),
+        fast_response_deadline_seconds=float(
+            os.getenv("FAST_RESPONSE_DEADLINE_SECONDS", "2.0")
+        ),
+        runtime_start_wait_seconds=float(
+            os.getenv("RUNTIME_START_WAIT_SECONDS", "1.0")
+        ),
         rate_limit_rpm=int(os.getenv("RATE_LIMIT_RPM", "60")),
         rate_limit_burst=int(os.getenv("RATE_LIMIT_BURST", "20")),
+        enable_async_learning_on_chat=(
+            os.getenv("ENABLE_ASYNC_LEARNING_ON_CHAT", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        ),
+        async_learning_max_concurrency=int(
+            os.getenv("ASYNC_LEARNING_MAX_CONCURRENCY", "1")
+        ),
         enable_web_fallback=(
             os.getenv("ENABLE_WEB_FALLBACK", "1").strip().lower()
             not in {"0", "false", "no", "off"}

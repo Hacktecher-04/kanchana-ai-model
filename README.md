@@ -162,8 +162,8 @@ Batch learn command:
 python scripts/learn_relationship_kb.py --count 120 --timeout 14
 ```
 
-Recommended production mode: keep `RELATIONSHIP_LEARNING_ON_CHAT=0` and use background learning only.
-If you still need immediate learn-on-miss, set `RELATIONSHIP_LEARNING_ON_CHAT=1`.
+For continuous learning mode, keep `RELATIONSHIP_LEARNING_ON_CHAT=1`.
+This project now runs learn-on-chat asynchronously, so replies are not blocked by learning calls.
 
 Optional continuous learner loop (for background worker / Render worker):
 
@@ -191,7 +191,7 @@ python scripts/background_learning_loop.py --sleep-minutes 180 --relationship-co
 ```
 
 `ENABLE_BACKGROUND_LEARNING=1` starts this learning loop automatically in API background at startup.
-To avoid message-triggered learning, keep `LIMITS_LEARNING_ON_CHAT=0` (default in `.env.example`).
+Set `LIMITS_LEARNING_ON_CHAT=1` to keep limits guidance learning active per conversation without blocking user reply.
 
 ### Client Prebuilt Context + Memory
 
@@ -281,6 +281,10 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 
 - `DEFAULT_TEMPERATURE` and `DEFAULT_TOP_P`: creativity vs stability
 - `RESPONSE_CHECKPOINTS`: quality strictness (`2` recommended)
+- `FAST_RESPONSE_DEADLINE_SECONDS`: hard per-request reply budget; if model is slow, API falls back fast
+- `RUNTIME_START_WAIT_SECONDS`: max time to wait for runtime startup on a request before fast fallback
+- `ENABLE_ASYNC_LEARNING_ON_CHAT`: keep learning in background without blocking user response
+- `ASYNC_LEARNING_MAX_CONCURRENCY`: async learning parallelism (keep `1` on small CPU)
 - `HISTORY_USER_TURNS`: memory window size
 - `MEMORY_SUMMARY_ITEMS`: compact memory summary size
 - `MAX_INPUT_CHARS`, `MAX_OUTPUT_TOKENS`: request/response caps
@@ -290,12 +294,12 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - `WEB_CACHE_MAX_ITEMS`: local learned cache size (`knowledge_cache.json`)
 - `ENABLE_RELATIONSHIP_LEARNING`: enable relationship-domain KB system
 - `RELATIONSHIP_BRIDGE_MODE`: answer-first + subtle relationship bridge for non-relationship questions
-- `RELATIONSHIP_LEARNING_ON_CHAT`: allow on-demand internet learning during chat (`0` recommended if you want background-only learning)
+- `RELATIONSHIP_LEARNING_ON_CHAT`: keep relationship KB learning active for new/missed queries
 - `RELATIONSHIP_KB_PATH`: file path of relationship KB JSON
 - `RELATIONSHIP_KB_MAX_ITEMS`: max entries stored in relationship KB
 - `RELATIONSHIP_LEARNING_TIMEOUT_SECONDS`: timeout for relationship web learning calls
 - `ENABLE_LIMITS_GUARDRAILS`: enable high-risk human-safety guardrail flow
-- `LIMITS_LEARNING_ON_CHAT`: on-demand limits KB learning for unseen high-risk queries (`0` recommended for background-only mode)
+- `LIMITS_LEARNING_ON_CHAT`: keep high-risk limits KB learning active per conversation
 - `LIMITS_KB_PATH`: file path of limits KB JSON
 - `LIMITS_KB_MAX_ITEMS`: max entries stored in limits KB
 - `LIMITS_LEARNING_TIMEOUT_SECONDS`: timeout for limits web learning calls

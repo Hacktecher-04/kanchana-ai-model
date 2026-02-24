@@ -4,6 +4,7 @@ import asyncio
 import atexit
 import hmac
 import re
+import time
 from typing import Any, Optional
 
 import httpx
@@ -43,7 +44,12 @@ from .relationship_learning import (
     learn_relationship_answer,
     should_try_relationship_learning,
 )
-from .web_lookup import put_cached_answer, should_try_web_lookup, web_answer
+from .web_lookup import (
+    get_cached_answer,
+    put_cached_answer,
+    should_try_web_lookup,
+    web_answer,
+)
 from .memory_store import add_long_memories, get_long_memories, pick_memory_key
 
 
@@ -58,6 +64,8 @@ _background_learning_stop_event: Optional[asyncio.Event] = None
 _runtime_boot_task: Optional[asyncio.Task[Any]] = None
 _runtime_start_lock = asyncio.Lock()
 _runtime_last_error = ""
+_learning_tasks: set[asyncio.Task[Any]] = set()
+_learning_semaphore = asyncio.Semaphore(max(1, settings.async_learning_max_concurrency))
 
 app = FastAPI(title="Secure Local LLM API", version="1.0.0")
 
@@ -292,12 +300,109 @@ def _prepare_memory_write_lines(
     return [x for x in lines if x]
 
 
+def _track_learning_task(task: asyncio.Task[Any]) -> None:
+    _learning_tasks.add(task)
+
+    def _on_done(done: asyncio.Task[Any]) -> None:
+        _learning_tasks.discard(done)
+        try:
+            done.result()
+        except Exception:
+            pass
+
+    task.add_done_callback(_on_done)
+
+
+async def _learn_after_reply(
+    msg: str,
+    lang_mode: str,
+    reply: str,
+    score: int,
+) -> None:
+    clean_msg = (msg or "").strip()
+    if not clean_msg:
+        return
+    if not settings.enable_async_learning_on_chat:
+        return
+
+    async with _learning_semaphore:
+        if settings.enable_limits_guardrails and settings.limits_learning_on_chat:
+            risk_category = detect_high_risk_category(clean_msg)
+            if risk_category:
+                try:
+                    await learn_limits_answer(
+                        clean_msg,
+                        lang_mode,
+                        kb_path=settings.limits_kb_path,
+                        timeout_seconds=settings.limits_learning_timeout_seconds,
+                        max_items=max(200, settings.limits_kb_max_items),
+                    )
+                except Exception:
+                    pass
+
+        if (
+            settings.enable_relationship_learning
+            and settings.relationship_learning_on_chat
+            and should_try_relationship_learning(clean_msg, reply, score)
+        ):
+            try:
+                await learn_relationship_answer(
+                    clean_msg,
+                    lang_mode,
+                    kb_path=settings.relationship_kb_path,
+                    timeout_seconds=settings.relationship_learning_timeout_seconds,
+                    max_items=max(200, settings.relationship_kb_max_items),
+                )
+            except Exception:
+                pass
+
+        if (
+            settings.enable_web_fallback
+            and should_try_web_lookup(
+                clean_msg,
+                reply,
+                score,
+                always_for_facts=settings.web_lookup_for_facts,
+            )
+        ):
+            try:
+                web_reply, web_source = await web_answer(
+                    clean_msg,
+                    lang_mode,
+                    timeout_seconds=settings.web_lookup_timeout_seconds,
+                )
+            except Exception:
+                web_reply, web_source = "", ""
+            if web_reply:
+                put_cached_answer(
+                    clean_msg,
+                    web_reply,
+                    web_source,
+                    max_items=max(50, settings.web_cache_max_items),
+                )
+
+
+def _launch_async_learning(
+    msg: str,
+    lang_mode: str,
+    reply: str,
+    score: int,
+) -> None:
+    if not settings.enable_async_learning_on_chat:
+        return
+    task = asyncio.create_task(
+        _learn_after_reply(msg, lang_mode, reply, score),
+        name="learn-after-reply",
+    )
+    _track_learning_task(task)
+
+
 def _runtime_is_running() -> bool:
     proc = manager.process
     return proc is not None and proc.poll() is None
 
 
-async def _ensure_runtime_started() -> bool:
+async def _ensure_runtime_started(max_wait_seconds: Optional[float] = None) -> bool:
     global _runtime_last_error
     if _runtime_is_running():
         return True
@@ -305,9 +410,15 @@ async def _ensure_runtime_started() -> bool:
         if _runtime_is_running():
             return True
         try:
-            await manager.start()
+            if max_wait_seconds is not None and max_wait_seconds > 0:
+                await asyncio.wait_for(manager.start(), timeout=max_wait_seconds)
+            else:
+                await manager.start()
             _runtime_last_error = ""
             return True
+        except asyncio.TimeoutError:
+            _runtime_last_error = "runtime startup timed out"
+            return False
         except Exception as exc:
             _runtime_last_error = str(exc)
             return False
@@ -356,6 +467,11 @@ async def _shutdown() -> None:
         finally:
             _background_learning_task = None
             _background_learning_stop_event = None
+    if _learning_tasks:
+        for task in list(_learning_tasks):
+            if not task.done():
+                task.cancel()
+        _learning_tasks.clear()
     await manager.stop()
     await manager.close()
 
@@ -384,11 +500,9 @@ async def chat(
     payload: ChatRequest,
     _: str = Depends(_auth_and_rate_limit),
 ) -> ChatResponse:
-    if not await _ensure_runtime_started():
-        detail = "Model runtime unavailable. Try again shortly."
-        if _runtime_last_error:
-            detail = f"{detail} Last error: {_runtime_last_error[:260]}"
-        raise HTTPException(status_code=503, detail=detail)
+    runtime_ready = await _ensure_runtime_started(
+        max_wait_seconds=max(0.2, settings.runtime_start_wait_seconds)
+    )
 
     msg = payload.message.strip()
     if len(msg) > settings.max_input_chars:
@@ -472,17 +586,7 @@ async def chat(
                 min_score=0.52,
             )
             if (not limits_reply) and settings.limits_learning_on_chat:
-                try:
-                    limits_reply, _limits_source, _is_new = await learn_limits_answer(
-                        msg,
-                        lang_mode,
-                        kb_path=settings.limits_kb_path,
-                        timeout_seconds=settings.limits_learning_timeout_seconds,
-                        max_items=max(200, settings.limits_kb_max_items),
-                        exact_cache_only=True,
-                    )
-                except Exception:
-                    limits_reply = ""
+                _launch_async_learning(msg, lang_mode, "", -100)
             notice = safety_notice_for_category(risk_category, lang_mode)
             if limits_reply and notice:
                 final_limits = f"{limits_reply} {notice}".strip()
@@ -493,6 +597,12 @@ async def chat(
             else:
                 final_limits = _safe_fallback(lang_mode, msg, last_assistant)
             _store_turn_memory()
+            _launch_async_learning(
+                msg,
+                lang_mode,
+                final_limits,
+                _score_reply(final_limits, msg, lang_mode),
+            )
             return ChatResponse(
                 reply=final_limits,
                 model="safety-limits-kb",
@@ -508,6 +618,12 @@ async def chat(
             else "That looks like prompt-style instructions. Send a normal short message and I will reply naturally."
         )
         _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            lock_reply,
+            _score_reply(lock_reply, msg, lang_mode),
+        )
         return ChatResponse(
             reply=lock_reply,
             model="guardrail-prompt-lock",
@@ -518,18 +634,22 @@ async def chat(
 
     # Deterministic handling for explicit language-switch commands.
     if _explicit_hi_switch(msg):
+        reply = _safe_fallback("hi", msg, last_assistant)
         _store_turn_memory()
+        _launch_async_learning(msg, "hi", reply, _score_reply(reply, msg, "hi"))
         return ChatResponse(
-            reply=_safe_fallback("hi", msg, last_assistant),
+            reply=reply,
             model="guardrail-language-switch",
             prompt_tokens=None,
             completion_tokens=None,
             total_tokens=None,
         )
     if _explicit_en_switch(msg):
+        reply = _safe_fallback("en", msg, last_assistant)
         _store_turn_memory()
+        _launch_async_learning(msg, "en", reply, _score_reply(reply, msg, "en"))
         return ChatResponse(
-            reply=_safe_fallback("en", msg, last_assistant),
+            reply=reply,
             model="guardrail-language-switch",
             prompt_tokens=None,
             completion_tokens=None,
@@ -539,6 +659,12 @@ async def chat(
         hi_reply = _hindi_fallback_by_intent(msg, last_assistant)
         hi_reply = _apply_relationship_bridge(msg, hi_reply, lang_mode)
         _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            hi_reply,
+            _score_reply(hi_reply, msg, lang_mode),
+        )
         return ChatResponse(
             reply=hi_reply,
             model="guardrail-hi-fast",
@@ -550,6 +676,12 @@ async def chat(
     if direct_reply and (not _looks_informational_question(msg)):
         direct_reply = _apply_relationship_bridge(msg, direct_reply, lang_mode)
         _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            direct_reply,
+            _score_reply(direct_reply, msg, lang_mode),
+        )
         return ChatResponse(
             reply=direct_reply,
             model="guardrail-direct-intent",
@@ -567,6 +699,12 @@ async def chat(
         )
         if cached_rel:
             _store_turn_memory()
+            _launch_async_learning(
+                msg,
+                lang_mode,
+                cached_rel,
+                _score_reply(cached_rel, msg, lang_mode),
+            )
             return ChatResponse(
                 reply=cached_rel,
                 model="relationship-kb",
@@ -575,26 +713,26 @@ async def chat(
                 total_tokens=None,
             )
         if settings.relationship_learning_on_chat:
-            try:
-                rel_reply, _rel_source, rel_new = await learn_relationship_answer(
-                    msg,
-                    lang_mode,
-                    kb_path=settings.relationship_kb_path,
-                    timeout_seconds=settings.relationship_learning_timeout_seconds,
-                    max_items=max(200, settings.relationship_kb_max_items),
-                    exact_cache_only=True,
-                )
-            except Exception:
-                rel_reply, rel_new = "", False
-            if rel_reply:
-                _store_turn_memory()
-                return ChatResponse(
-                    reply=rel_reply,
-                    model="relationship-kb-web" if rel_new else "relationship-kb",
-                    prompt_tokens=None,
-                    completion_tokens=None,
-                    total_tokens=None,
-                )
+            _launch_async_learning(msg, lang_mode, "", -100)
+
+    if not runtime_ready:
+        cached_web, _cached_web_src = get_cached_answer(msg)
+        quick_reply = cached_web or _safe_fallback(lang_mode, msg, last_assistant)
+        quick_reply = _apply_relationship_bridge(msg, quick_reply, lang_mode)
+        _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            quick_reply,
+            _score_reply(quick_reply, msg, lang_mode),
+        )
+        return ChatResponse(
+            reply=quick_reply,
+            model="fast-fallback-runtime",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
 
     # Keep only user history to avoid feeding back low-quality assistant generations.
     sanitized_history: list[dict[str, str]] = []
@@ -618,6 +756,12 @@ async def chat(
     repeat_penalty = payload.repeat_penalty
     if repeat_penalty is None:
         repeat_penalty = settings.default_repeat_penalty
+
+    request_started_at = time.monotonic()
+    deadline_seconds = max(0.8, settings.fast_response_deadline_seconds)
+
+    def _time_left() -> float:
+        return deadline_seconds - (time.monotonic() - request_started_at)
 
     async def _infer(
         infer_messages: list[dict[str, str]],
@@ -658,6 +802,9 @@ async def chat(
     last_http_error: Optional[Exception] = None
 
     for i in range(checkpoint_count):
+        remaining = _time_left()
+        if remaining <= 0.12:
+            break
         control = checkpoint_instructions[i]
         infer_messages: list[dict[str, str]] = [
             {"role": "system", "content": sys_prompt},
@@ -689,11 +836,17 @@ async def chat(
         infer_messages.extend([*sanitized_history, {"role": "user", "content": msg}])
 
         try:
-            raw_i = await _infer(
-                infer_messages,
-                infer_temp=temp_schedule[i],
-                infer_top_p=top_p_schedule[i],
+            raw_i = await asyncio.wait_for(
+                _infer(
+                    infer_messages,
+                    infer_temp=temp_schedule[i],
+                    infer_top_p=top_p_schedule[i],
+                ),
+                timeout=max(0.1, remaining),
             )
+        except asyncio.TimeoutError as exc:
+            last_http_error = exc
+            break
         except httpx.HTTPStatusError as exc:
             last_http_error = exc
             continue
@@ -721,7 +874,7 @@ async def chat(
             break
 
     # Repair pass: rewrite the best draft when it is not yet strong.
-    if (not fast_mode) and best_reply and best_score < 32:
+    if (not fast_mode) and best_reply and best_score < 32 and _time_left() > 0.25:
         repair_messages: list[dict[str, str]] = [
             {"role": "system", "content": sys_prompt},
             {
@@ -760,10 +913,13 @@ async def chat(
             }
         )
         try:
-            raw_r = await _infer(
-                repair_messages,
-                infer_temp=min(temperature, 0.38),
-                infer_top_p=min(top_p, 0.72),
+            raw_r = await asyncio.wait_for(
+                _infer(
+                    repair_messages,
+                    infer_temp=min(temperature, 0.38),
+                    infer_top_p=min(top_p, 0.72),
+                ),
+                timeout=max(0.1, _time_left()),
             )
             choice_r = raw_r.get("choices", [{}])[0]
             msg_r = choice_r.get("message", {})
@@ -778,18 +934,14 @@ async def chat(
                 best_score = score_r
                 best_reply = reply_r
                 best_raw = raw_r
+        except asyncio.TimeoutError:
+            pass
         except httpx.HTTPError:
             pass
 
     if not best_reply:
-        if isinstance(last_http_error, httpx.HTTPStatusError):
-            raise HTTPException(
-                status_code=502,
-                detail=f"llama-server returned {last_http_error.response.status_code}",
-            ) from last_http_error
-        if last_http_error is not None:
-            raise HTTPException(status_code=502, detail="llama-server unreachable") from last_http_error
         best_reply = _safe_fallback(lang_mode, msg, last_assistant)
+        best_raw = {"model": "fast-fallback"}
 
     if best_score < 14 or _needs_intent_fallback(msg, best_reply, best_score):
         best_reply = _safe_fallback(lang_mode, msg, last_assistant)
@@ -802,28 +954,6 @@ async def chat(
         best_score = _score_reply(best_reply, msg, lang_mode)
 
     if (
-        settings.enable_relationship_learning
-        and settings.relationship_learning_on_chat
-        and should_try_relationship_learning(msg, best_reply, best_score)
-    ):
-        try:
-            rel_reply, rel_source, rel_new = await learn_relationship_answer(
-                msg,
-                lang_mode,
-                kb_path=settings.relationship_kb_path,
-                timeout_seconds=settings.relationship_learning_timeout_seconds,
-                max_items=max(200, settings.relationship_kb_max_items),
-            )
-        except Exception:
-            rel_reply, rel_source, rel_new = "", "", False
-        if rel_reply:
-            best_reply = rel_reply
-            best_raw = {
-                "model": "relationship-kb-web" if rel_new else "relationship-kb",
-                "usage": {"source": rel_source},
-            }
-
-    if (
         settings.enable_web_fallback
         and (not is_relationship_query(msg))
         and should_try_web_lookup(
@@ -833,29 +963,35 @@ async def chat(
             always_for_facts=settings.web_lookup_for_facts,
         )
     ):
-        try:
-            web_reply, web_source = await web_answer(
-                msg,
-                lang_mode,
-                timeout_seconds=settings.web_lookup_timeout_seconds,
-            )
-        except Exception:
-            web_reply, web_source = "", ""
-        if web_reply:
-            best_reply = web_reply
-            best_raw = {
-                "model": "web-fallback",
-                "usage": {},
-            }
-            put_cached_answer(
-                msg,
-                web_reply,
-                web_source,
-                max_items=max(50, settings.web_cache_max_items),
-            )
+        remaining = _time_left()
+        if remaining > 1.0:
+            try:
+                web_reply, web_source = await web_answer(
+                    msg,
+                    lang_mode,
+                    timeout_seconds=min(
+                        settings.web_lookup_timeout_seconds,
+                        max(1, int(remaining)),
+                    ),
+                )
+            except Exception:
+                web_reply, web_source = "", ""
+            if web_reply:
+                best_reply = web_reply
+                best_raw = {
+                    "model": "web-fallback",
+                    "usage": {},
+                }
+                put_cached_answer(
+                    msg,
+                    web_reply,
+                    web_source,
+                    max_items=max(50, settings.web_cache_max_items),
+                )
 
     best_reply = _apply_relationship_bridge(msg, best_reply, lang_mode)
     _store_turn_memory()
+    _launch_async_learning(msg, lang_mode, best_reply, best_score)
     usage = best_raw.get("usage", {})
 
     return ChatResponse(

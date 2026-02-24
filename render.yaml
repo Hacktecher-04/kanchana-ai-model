@@ -25,13 +25,23 @@ services:
       - key: SYSTEM_PROMPT_FILE
         value: prompts/system_prompt.txt
       - key: LLAMA_CTX
-        value: 4096
+        value: 1024
       - key: LLAMA_THREADS
         value: 4
+      - key: RESPONSE_CHECKPOINTS
+        value: 1
+      - key: FAST_RESPONSE_DEADLINE_SECONDS
+        value: 2.0
+      - key: RUNTIME_START_WAIT_SECONDS
+        value: 1.0
+      - key: ENABLE_ASYNC_LEARNING_ON_CHAT
+        value: 1
+      - key: ASYNC_LEARNING_MAX_CONCURRENCY
+        value: 1
       - key: MAX_INPUT_CHARS
         value: 2000
       - key: MAX_OUTPUT_TOKENS
-        value: 96
+        value: 48
       - key: DEFAULT_REPEAT_PENALTY
         value: 1.25
       - key: RATE_LIMIT_RPM
@@ -51,7 +61,7 @@ services:
       - key: RELATIONSHIP_BRIDGE_MODE
         value: 1
       - key: RELATIONSHIP_LEARNING_ON_CHAT
-        value: 0
+        value: 1
       - key: RELATIONSHIP_KB_PATH
         value: knowledge_relationship.json
       - key: RELATIONSHIP_KB_MAX_ITEMS
@@ -61,7 +71,7 @@ services:
       - key: ENABLE_LIMITS_GUARDRAILS
         value: 1
       - key: LIMITS_LEARNING_ON_CHAT
-        value: 0
+        value: 1
       - key: LIMITS_KB_PATH
         value: knowledge_limits.json
       - key: LIMITS_KB_MAX_ITEMS
