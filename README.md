@@ -123,18 +123,24 @@ Long-memory version:
 
 ### Big LLM terminal chat (Gemini-style context carry)
 
-Run direct 7B chat with automatic server startup + readiness check:
+Default mode now uses API pipeline (`Engine=api`) so offline behavior matches online logic:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\chat_big_llm_terminal.ps1
 ```
 
-This client sends, on every turn:
+Direct llama mode is still available:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\chat_big_llm_terminal.ps1 -Engine direct
+```
+
+API mode sends, on every turn:
 - current `system instruction`
 - full rolling `history`
 - current user message
 
-So each next response is generated from system + history + new text together.
+So each next response is generated from system + history + new text together through the same API stack.
 
 Useful commands:
 - `/system <text>`: change system instruction live

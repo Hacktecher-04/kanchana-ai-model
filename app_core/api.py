@@ -810,7 +810,13 @@ async def chat(
             total_tokens=None,
         )
     direct_reply = _direct_intent_reply(msg, lang_mode, last_assistant)
-    if (not deliberate_mode) and direct_reply:
+    style_intent = bool(
+        re.search(
+            r"\b(flirt|flirty|romantic|romance|shayari|shayri|miss me|miss you|yaad aate|yaad aati|yaad aata)\b",
+            msg.lower(),
+        )
+    )
+    if direct_reply and ((not deliberate_mode) or style_intent):
         direct_reply = _finalize_chat_reply(direct_reply)
         _store_turn_memory()
         _launch_async_learning(
@@ -1017,7 +1023,56 @@ async def chat(
             break
         except httpx.HTTPStatusError as exc:
             last_http_error = exc
-            continue
+            body_text = ""
+            try:
+                body_text = (exc.response.text or "").lower()
+            except Exception:
+                body_text = ""
+            is_ctx_overflow = (
+                (exc.response is not None)
+                and exc.response.status_code == 400
+                and "exceeds the available context size" in body_text
+            )
+            if not is_ctx_overflow:
+                continue
+
+            compact_prompt = _compact_line(sys_prompt, limit=1200)
+            if not compact_prompt:
+                compact_prompt = (
+                    "You are Kanchana. Reply naturally, emotionally aware, concise, and in user language."
+                )
+            compact_messages: list[dict[str, str]] = [
+                {"role": "system", "content": compact_prompt},
+                {
+                    "role": "system",
+                    "content": (
+                        f"{lang_rule} {mode_hint} Keep it natural, specific, and concise. "
+                        f"{intent_hint} {human_hint}"
+                    ),
+                },
+            ]
+            if sanitized_history:
+                compact_messages.extend(sanitized_history[-4:])
+            compact_messages.append({"role": "user", "content": msg})
+
+            retry_remaining = _time_left()
+            if retry_remaining <= 0.12:
+                continue
+            try:
+                raw_i = await asyncio.wait_for(
+                    _infer(
+                        compact_messages,
+                        infer_temp=min(temp_schedule[i], 0.52),
+                        infer_top_p=min(top_p_schedule[i], 0.84),
+                    ),
+                    timeout=max(0.1, retry_remaining),
+                )
+            except asyncio.TimeoutError as retry_exc:
+                last_http_error = retry_exc
+                break
+            except httpx.HTTPError as retry_exc:
+                last_http_error = retry_exc
+                continue
         except httpx.HTTPError as exc:
             last_http_error = exc
             continue

@@ -924,7 +924,10 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         return "Haan ready hoon. Bolo kis topic se start karna hai."
     if re.search(r"\b(yaad rakh|previous chat|memory)\b", low):
         return "Main current chat context ko use karke continuity rakh sakta hoon. Long-term memory ke liye explicit storage layer chahiye hoti hai."
-    if re.search(r"\b(miss kiya|miss kia|miss me|yaad aaya|yaad aya)\b", low):
+    if re.search(
+        r"\b(miss kiya|miss kia|miss me|yaad aaya|yaad aya|yaad aate ho|yaad aati ho|yaad aata hai)\b",
+        low,
+    ):
         return _choose_variant(
             [
                 "Thoda sa, aur tumhare message ne confirm kar diya.",
@@ -1481,7 +1484,7 @@ def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
             low,
             avoid,
         )
-    if re.search(r"\b(you miss me|miss me)\b", low):
+    if re.search(r"\b(you miss me|miss me|i miss you|miss you)\b", low):
         return _choose_variant(
             [
                 "Maybe a little. You do show up with interesting timing.",
@@ -2018,7 +2021,8 @@ def _should_use_direct_intent_reply(user_msg: str, lang_mode: str) -> bool:
                 r"ladki|girl|impress|date|crush|patana|set|last line|close|closing|"
                 r"love you|i love you|bol du|bolu|rahega|rahenga|sahi rahega|"
                 r"relationship|relation ship|love|pyar|pyaar|rishta|"
-                r"flirt|flirty|romantic|romance|tease|teasing|miss me)\b"
+                r"flirt|flirty|romantic|romance|tease|teasing|miss me|miss you|"
+                r"yaad aate|yaad aati|yaad aata|shayari|shayri)\b"
             ),
             low,
         )
