@@ -331,6 +331,93 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - Start app with `uvicorn api_service:app`
 - Health check path: `/health`
 
+## Connect from any app
+
+Use this section when you want to call the deployed API from another project.
+
+### 1) Required values
+
+- `BASE_URL`: your Render URL, example `https://kanchana-ai-model.onrender.com`
+- `APP_API_KEY`: app key from Render env
+- `APP_CLIENT_SECRET`: client secret from Render env
+
+### 2) Required headers (every chat request)
+
+- `x-api-key: <APP_API_KEY>`
+- `x-client-secret: <APP_CLIENT_SECRET>`
+- `Content-Type: application/json`
+
+### 3) Endpoints
+
+- `GET /health`: service status
+- `POST /v1/chat-text`: plain text reply
+- `POST /v1/chat`: structured JSON reply
+
+### 4) Example: PowerShell
+
+```powershell
+$BASE_URL = "https://kanchana-ai-model.onrender.com"
+$headers = @{
+  "x-api-key" = "YOUR_APP_API_KEY"
+  "x-client-secret" = "YOUR_CLIENT_SECRET"
+}
+$body = @{ message = "hello" } | ConvertTo-Json -Compress
+Invoke-RestMethod -Method Post -Uri "$BASE_URL/v1/chat-text" `
+  -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 60
+```
+
+### 5) Example: JavaScript (`fetch`)
+
+```javascript
+const baseUrl = "https://kanchana-ai-model.onrender.com";
+
+const resp = await fetch(`${baseUrl}/v1/chat`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.APP_API_KEY,
+    "x-client-secret": process.env.APP_CLIENT_SECRET,
+  },
+  body: JSON.stringify({
+    message: "who discovered gravity?",
+    history: [],
+  }),
+});
+
+const data = await resp.json();
+console.log(data);
+```
+
+### 6) Example: Python (`requests`)
+
+```python
+import requests
+
+base_url = "https://kanchana-ai-model.onrender.com"
+headers = {
+    "x-api-key": "YOUR_APP_API_KEY",
+    "x-client-secret": "YOUR_CLIENT_SECRET",
+    "Content-Type": "application/json",
+}
+payload = {"message": "hello"}
+
+r = requests.post(f"{base_url}/v1/chat-text", json=payload, headers=headers, timeout=60)
+print(r.status_code, r.text)
+```
+
+### 7) Quick troubleshooting
+
+- `401 Invalid API key`: wrong `x-api-key` or missing header.
+- `401 Invalid client secret`: wrong `x-client-secret` or missing header.
+- `429`: rate limit reached, slow down request frequency.
+- `502`: runtime busy/unavailable; retry with smaller message.
+
+### 8) Security notes
+
+- Never hardcode secrets in frontend/public apps.
+- Keep keys in backend/server env vars.
+- Rotate keys periodically in Render env.
+
 ## GitHub -> Render (Recommended)
 
 1) Initialize git and first commit:
