@@ -1561,8 +1561,8 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         return _choose_variant(
             [
                 "Namaste bhai. Bolo kya baat karni hai?",
-                "Hi, main yahin hoon. Seedha pucho kya chahiye.",
-                "Hello. Chalo seedhi baat karte hain, kya puchna hai?",
+                "Hi, main yahin hoon. Tum jo bolna chaho bolo.",
+                "Hello. Chalo aaram se baat start karte hain.",
             ],
             low,
             avoid,
@@ -1702,17 +1702,17 @@ def _hindi_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         )
     variants = [
         "Main yahin hoon, aaram se bolo.",
-        "Theek, baat ko simple rakhte hain. Tumhara main point kya hai?",
+        "Theek, baat simple rakhte hain. Aaj tumhare dimaag me kya chal raha hai?",
         "Chalo yahin se start karte hain. Abhi tum kya feel kar rahe ho?",
-        "Samjha. Jo cheez sabse zyada matter karti hai wahi bolo.",
-        "Hum isko sort kar lenge. Pehle scene clear karo.",
+        "Samjha. Jo tumhare liye important hai wahi se start karte hain.",
+        "Hum isko sort kar lenge. Bas thoda scene samjha do.",
         "Bina rush ke bolo, main follow kar raha hoon.",
         "Theek hai, thoda context do aur baat aage badhate hain.",
-        "Haan sun raha hoon. Jo asli point hai woh drop karo.",
+        "Haan sun raha hoon. Aaram se batao, main saath hoon.",
         "No tension, hum calmly clear kar lenge.",
         "Jo mann me chal raha hai woh normal words me bol do.",
-        "Baat pakad lunga, bas thoda sa context de do.",
-        "Theek, isko clean rakhte hain. Ek direct line bhejo.",
+        "Baat samajh lunga, bas 1-2 line me scene bata do.",
+        "Theek, isko clean rakhte hain. Chhoti si line se start karo.",
     ]
     return _choose_variant(variants, low, avoid)
 
@@ -2114,15 +2114,15 @@ def _english_fallback_by_intent(user_msg: str, avoid: str = "") -> str:
         )
     variants = [
         "I am here. Say it in your own way and we will continue.",
-        "Okay, keep it simple and tell me the main point.",
-        "I hear you. Start with what matters most right now.",
-        "We can sort this, just give me the core of it.",
+        "Okay, keep it simple and tell me what is on your mind.",
+        "I hear you. Start from what feels most important to you.",
+        "We can sort this, just share a little context and we will move.",
         "No rush, walk me through the part that feels heavy.",
-        "Fair, tell me the real point and we will keep moving.",
-        "Start from the most important bit and I will follow.",
-        "Drop the main line first, then we build from there.",
+        "Fair, say it naturally and we will keep moving.",
+        "Start from any part and I will follow.",
+        "Give me one short line first, then we build from there.",
         "Got you. Keep it natural and tell me what is bothering you.",
-        "We are good. Say the key part and I will respond clearly.",
+        "We are good. Tell me what you want to talk about and I will respond clearly.",
     ]
     return _choose_variant(variants, low, avoid)
 
