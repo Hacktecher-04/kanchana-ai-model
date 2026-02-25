@@ -65,6 +65,7 @@ class Settings:
     async_learning_max_concurrency: int
     ultra_fast_mode: bool
     deliberate_human_mode: bool
+    always_flirt_mode: bool
     enable_web_fallback: bool
     web_lookup_for_facts: bool
     web_lookup_timeout_seconds: int
@@ -186,6 +187,10 @@ def load_settings() -> Settings:
         ),
         deliberate_human_mode=(
             os.getenv("DELIBERATE_HUMAN_MODE", "1").strip().lower()
+            not in {"0", "false", "no", "off"}
+        ),
+        always_flirt_mode=(
+            os.getenv("ALWAYS_FLIRT_MODE", "0").strip().lower()
             not in {"0", "false", "no", "off"}
         ),
         enable_web_fallback=(

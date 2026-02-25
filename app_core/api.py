@@ -35,6 +35,7 @@ from .conversation import (
     _style_reply_for_mode,
     _looks_prompt_override,
     _flirt_lock_reply,
+    _resolve_flirt_lock_from_system_prompt,
     _resolve_flirt_lock_state,
 )
 from .runtime import LlamaServerManager, TokenBucketLimiter
@@ -579,6 +580,17 @@ async def chat(
         raw_msg,
         recent_history,
     )
+    system_flirt_lock_enabled, system_flirt_lock_mode = _resolve_flirt_lock_from_system_prompt(
+        sys_prompt
+    )
+    hard_flirt_lock = settings.always_flirt_mode or system_flirt_lock_enabled
+    if hard_flirt_lock:
+        flirt_lock_enabled = True
+        if system_flirt_lock_mode and system_flirt_lock_mode != "CHILL":
+            flirt_lock_mode = system_flirt_lock_mode
+        if chat_mode == "CHILL":
+            chat_mode = flirt_lock_mode or "NAUGHTY"
+
     stripped_msg = _strip_mode_tokens(raw_msg)
     mode_only_update = bool(raw_msg and not stripped_msg)
     msg = stripped_msg or raw_msg
@@ -659,7 +671,19 @@ async def chat(
         return _apply_relationship_bridge(msg, styled, lang_mode)
 
     if mode_only_update:
-        sync_reply = _mode_sync_reply(chat_mode, lang_mode)
+        if flirt_lock_enabled:
+            lock_mode = chat_mode if chat_mode != "CHILL" else (flirt_lock_mode or "NAUGHTY")
+            sync_reply = _flirt_lock_reply(
+                raw_msg,
+                lang_mode,
+                lock_mode,
+                last_assistant,
+                hard_lock=hard_flirt_lock,
+            )
+            sync_model = "flirt-lock-sync"
+        else:
+            sync_reply = _mode_sync_reply(chat_mode, lang_mode)
+            sync_model = "mode-sync"
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -669,21 +693,33 @@ async def chat(
         )
         return ChatResponse(
             reply=sync_reply,
-            model="mode-sync",
+            model=sync_model,
             prompt_tokens=None,
             completion_tokens=None,
             total_tokens=None,
         )
 
     if _looks_persona_profile_prompt(raw_msg):
-        if "permanent human behavior mode" in raw_msg.lower():
-            profile_reply = (
-                "Permanent human behavior mode locked. Ab vibe natural aur instinctive flow me rahegi."
-                if lang_mode == "hi"
-                else "Permanent human behavior mode locked. I will keep the tone natural, instinctive, and emotionally real."
+        if hard_flirt_lock:
+            lock_mode = chat_mode if chat_mode != "CHILL" else (flirt_lock_mode or "NAUGHTY")
+            profile_reply = _flirt_lock_reply(
+                raw_msg,
+                lang_mode,
+                lock_mode,
+                last_assistant,
+                hard_lock=True,
             )
+            profile_model = "flirt-lock-profile"
         else:
-            profile_reply = _mode_sync_reply(chat_mode, lang_mode)
+            if "permanent human behavior mode" in raw_msg.lower():
+                profile_reply = (
+                    "Permanent human behavior mode locked. Ab vibe natural aur instinctive flow me rahegi."
+                    if lang_mode == "hi"
+                    else "Permanent human behavior mode locked. I will keep the tone natural, instinctive, and emotionally real."
+                )
+            else:
+                profile_reply = _mode_sync_reply(chat_mode, lang_mode)
+            profile_model = "persona-profile-sync"
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -693,7 +729,7 @@ async def chat(
         )
         return ChatResponse(
             reply=profile_reply,
-            model="persona-profile-sync",
+            model=profile_model,
             prompt_tokens=None,
             completion_tokens=None,
             total_tokens=None,
@@ -735,12 +771,24 @@ async def chat(
             )
 
     if _looks_prompt_override(msg):
-        lock_reply = (
-            "Bhai, yeh prompt-style instructions hain. Normal short message bhejo, main natural reply dunga."
-            if lang_mode == "hi"
-            else "That looks like prompt-style instructions. Send a normal short message and I will reply naturally."
-        )
-        lock_reply = _finalize_chat_reply(lock_reply, bridge=False, style=False)
+        if hard_flirt_lock:
+            lock_mode = chat_mode if chat_mode != "CHILL" else (flirt_lock_mode or "NAUGHTY")
+            lock_reply = _flirt_lock_reply(
+                msg,
+                lang_mode,
+                lock_mode,
+                last_assistant,
+                hard_lock=True,
+            )
+            lock_model = "flirt-lock-prompt-guard"
+        else:
+            lock_reply = (
+                "Bhai, yeh prompt-style instructions hain. Normal short message bhejo, main natural reply dunga."
+                if lang_mode == "hi"
+                else "That looks like prompt-style instructions. Send a normal short message and I will reply naturally."
+            )
+            lock_reply = _finalize_chat_reply(lock_reply, bridge=False, style=False)
+            lock_model = "guardrail-prompt-lock"
         _store_turn_memory()
         _launch_async_learning(
             msg,
@@ -750,7 +798,7 @@ async def chat(
         )
         return ChatResponse(
             reply=lock_reply,
-            model="guardrail-prompt-lock",
+            model=lock_model,
             prompt_tokens=None,
             completion_tokens=None,
             total_tokens=None,
@@ -788,6 +836,7 @@ async def chat(
             lang_mode,
             lock_mode,
             last_assistant,
+            hard_lock=hard_flirt_lock,
         )
         _store_turn_memory()
         _launch_async_learning(

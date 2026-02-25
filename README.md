@@ -314,6 +314,7 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
 - `ENABLE_ASYNC_LEARNING_ON_CHAT`: keep learning in background without blocking user response
 - `ASYNC_LEARNING_MAX_CONCURRENCY`: async learning parallelism (keep `1` on small CPU)
 - `ULTRA_FAST_MODE`: bypass heavy generation path and return fast deterministic replies while learning continues in background
+- `ALWAYS_FLIRT_MODE`: force flirt-lock on every message (hard lock, mode-off commands ignored)
 - `HISTORY_USER_TURNS`: memory window size
 - `MEMORY_SUMMARY_ITEMS`: compact memory summary size
 - `MAX_INPUT_CHARS`, `MAX_OUTPUT_TOKENS`: request/response caps
@@ -365,7 +366,7 @@ python scripts/analyze_chat_transcript.py --input-file transcripts\chat_20_YYYYM
   - `LLAMA_BATCH=128`, `LLAMA_UBATCH=64` for safer memory profile
   - `LLAMA_MODEL_PATH=models/qwen2.5-7b-instruct-q3_k_m.gguf`
   - `LLAMA_MODEL_URL` points to Qwen 7B GGUF download
-  - `ULTRA_FAST_MODE=0` and `DELIBERATE_HUMAN_MODE=1` for real model replies
+  - `ULTRA_FAST_MODE=0`, `DELIBERATE_HUMAN_MODE=1`, `ALWAYS_FLIRT_MODE=1` for full-model always-flirty behavior
   - larger runtime/deadline waits for cold start and first inference
   - on-chat learning loops disabled (`RELATIONSHIP_LEARNING_ON_CHAT=0`, `LIMITS_LEARNING_ON_CHAT=0`)
   - if startup still fails with OOM, reduce context/tokens or move to larger instance
