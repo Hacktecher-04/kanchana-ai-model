@@ -34,6 +34,8 @@ from .conversation import (
     _score_reply,
     _style_reply_for_mode,
     _looks_prompt_override,
+    _flirt_lock_reply,
+    _resolve_flirt_lock_state,
 )
 from .runtime import LlamaServerManager, TokenBucketLimiter
 from .schemas import ChatRequest, ChatResponse, ClientContext
@@ -573,6 +575,10 @@ async def chat(
     history_window_items = history_user_turns * 2
     recent_history = payload.history[-history_window_items:]
     chat_mode = _detect_chat_mode(raw_msg, recent_history)
+    flirt_lock_enabled, flirt_lock_mode = _resolve_flirt_lock_state(
+        raw_msg,
+        recent_history,
+    )
     stripped_msg = _strip_mode_tokens(raw_msg)
     mode_only_update = bool(raw_msg and not stripped_msg)
     msg = stripped_msg or raw_msg
@@ -771,6 +777,28 @@ async def chat(
         return ChatResponse(
             reply=reply,
             model="guardrail-language-switch",
+            prompt_tokens=None,
+            completion_tokens=None,
+            total_tokens=None,
+        )
+    if flirt_lock_enabled:
+        lock_mode = chat_mode if chat_mode != "CHILL" else (flirt_lock_mode or "NAUGHTY")
+        flirt_reply = _flirt_lock_reply(
+            msg,
+            lang_mode,
+            lock_mode,
+            last_assistant,
+        )
+        _store_turn_memory()
+        _launch_async_learning(
+            msg,
+            lang_mode,
+            flirt_reply,
+            _score_reply(flirt_reply, msg, lang_mode),
+        )
+        return ChatResponse(
+            reply=flirt_reply,
+            model="flirt-lock",
             prompt_tokens=None,
             completion_tokens=None,
             total_tokens=None,

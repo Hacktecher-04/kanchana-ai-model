@@ -16,6 +16,15 @@ _CHAT_MODES = (
 )
 
 
+def _compact_line(text: str, *, limit: int = 120) -> str:
+    cleaned = re.sub(r"\s+", " ", (text or "").strip())
+    if not cleaned:
+        return ""
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit].strip()
+    return cleaned
+
+
 def _strip_mode_tokens(text: str) -> str:
     cleaned = re.sub(
         r"\[(lovely|horror|shayari|chill|possessive|naughty|mystic)\]",
@@ -144,15 +153,11 @@ def _detect_chat_mode(msg: str, history: list[HistoryMessage]) -> str:
         txt = item.content
         if _is_flirt_lock_disable(txt):
             return "CHILL"
-        if _is_flirt_lock_enable(txt):
-            return _flirt_lock_mode(txt)
-
-    for item in reversed(history[-20:]):
-        if item.role != "user":
-            continue
-        hist_mode = _extract_mode_token(item.content)
+        hist_mode = _extract_mode_token(txt)
         if hist_mode:
             return hist_mode
+        if _is_flirt_lock_enable(txt):
+            return _flirt_lock_mode(txt)
 
     inferred = _infer_mode_from_tone(msg)
     if inferred:
@@ -165,6 +170,26 @@ def _detect_chat_mode(msg: str, history: list[HistoryMessage]) -> str:
         if inferred_hist:
             return inferred_hist
     return "CHILL"
+
+
+def _resolve_flirt_lock_state(
+    msg: str,
+    history: list[HistoryMessage],
+) -> tuple[bool, str]:
+    if _is_flirt_lock_disable(msg):
+        return False, "CHILL"
+    if _is_flirt_lock_enable(msg):
+        return True, _flirt_lock_mode(msg)
+
+    for item in reversed(history[-30:]):
+        if item.role != "user":
+            continue
+        txt = item.content
+        if _is_flirt_lock_disable(txt):
+            return False, "CHILL"
+        if _is_flirt_lock_enable(txt):
+            return True, _flirt_lock_mode(txt)
+    return False, ""
 
 
 def _mode_style_hint(mode: str, lang_mode: str) -> str:
@@ -191,6 +216,144 @@ def _mode_style_hint(mode: str, lang_mode: str) -> str:
         "MYSTIC": "Mode MYSTIC: dreamy, spiritual, cosmic, and slower in tone.",
     }
     return hints.get(active, hints["CHILL"])
+
+
+def _flirt_lock_reply(
+    user_msg: str,
+    lang_mode: str,
+    mode: str,
+    avoid: str = "",
+) -> str:
+    active = mode if mode in _CHAT_MODES and mode != "CHILL" else "NAUGHTY"
+    low = (user_msg or "").lower().strip()
+    direct_mode = _extract_mode_token(user_msg)
+    if direct_mode in _CHAT_MODES and direct_mode != "CHILL":
+        active = direct_mode
+    else:
+        inferred_mode = _infer_mode_from_tone(user_msg)
+        if inferred_mode in _CHAT_MODES and inferred_mode != "CHILL":
+            active = inferred_mode
+
+    if _is_flirt_lock_disable(user_msg):
+        if lang_mode == "hi":
+            return "Theek hai, flirt lock off. Ab normal vibe me baat karte hain."
+        return "Alright, flirt lock is off. We can continue in normal vibe."
+
+    if _is_flirt_lock_enable(user_msg):
+        if lang_mode == "hi":
+            if active == "SHAYARI":
+                return "Done. Ab har line shayari vibe me aayegi, seedha dil tak."
+            return "Done. Ab har reply flirt vibe me aayega, thoda tease ke saath."
+        if active == "SHAYARI":
+            return "Done. From now on, every line stays poetic and flirty."
+        return "Done. From now on, every reply stays flirty with playful tone."
+
+    if not low:
+        if lang_mode == "hi":
+            base = "Tum line drop karo, main usi me spark daal deti hoon."
+        else:
+            base = "Drop your line and I will turn it into a flirty spark."
+    elif lang_mode == "hi":
+        if re.search(r"^\s*(hi|hello|hey|hii|yo)\b", low):
+            base = "Hi, tum aaye ho to chat ka mood khud playful ho gaya."
+        elif re.search(r"\b(kya|kaise|kyu|kyun|kab|kahan|kaun)\b|\?", low):
+            base = (
+                "Sawal tumhara valid hai, par style mera flirty hi rahega. "
+                "Tum pucho, main tease ke saath reply karti rahungi."
+            )
+        elif re.search(r"\b(thanks|thank you|shukriya)\b", low):
+            base = "Thanks ka credit tumhari vibe ko jata hai, tum aise bolo to smile aa jati hai."
+        elif re.search(r"\b(sad|dukhi|akela|alone|lonely|down|upset|mood off)\b", low):
+            base = "Aaj close rahte hain, main yahin hoon. Tum bolte jao, main soft aur warm tone me rahungi."
+        else:
+            base = f"Jo tumne abhi bola usi par reply de rahi hoon: \"{_compact_line(user_msg, limit=80)}\"."
+    else:
+        if re.search(r"^\s*(hi|hello|hey|yo)\b", low):
+            base = "Hi, your entry instantly made this chat warmer and playful."
+        elif re.search(r"\b(what|how|why|when|where|who)\b|\?", low):
+            base = (
+                "Your question is fair, and my tone will stay flirty. "
+                "You ask, I answer with spark."
+            )
+        elif re.search(r"\b(thanks|thank you)\b", low):
+            base = "You are welcome, and your soft tone deserves the real credit."
+        elif re.search(r"\b(sad|alone|lonely|down|upset|mood off)\b", low):
+            base = "Stay close for a bit, I am here. We keep this gentle and warm."
+        else:
+            base = f"I heard your current line clearly: \"{_compact_line(user_msg, limit=80)}\"."
+
+    if lang_mode == "hi":
+        overlays: dict[str, list[str]] = {
+            "LOVELY": [
+                "Tumhari line me softness hai, mujhe pasand aayi.",
+                "Aise hi close tone rakho, vibe aur acchi lagti hai.",
+            ],
+            "HORROR": [
+                "Is vibe me halka sa dark spark bhi hai.",
+                "Line me raat jaisi khamoshi aur pull dono hai.",
+            ],
+            "SHAYARI": [
+                "Tumhare alfaaz me narmi hai jo der tak rehti hai.",
+                "Ye line seedha dil tak jati hai.",
+            ],
+            "POSSESSIVE": [
+                "Focus yahin rakho, mujhe clear signals pasand hain.",
+                "Half signals mat do, seedha vibe rakho.",
+            ],
+            "NAUGHTY": [
+                "Ye shararti tone tum par suit karti hai.",
+                "Thoda tease rehne do, maza wahi hai.",
+            ],
+            "MYSTIC": [
+                "Energy me aj ek alag sa pull hai.",
+                "Ye line words se zyada vibration me bol rahi hai.",
+            ],
+        }
+    else:
+        overlays = {
+            "LOVELY": [
+                "Your softness lands exactly where it should.",
+                "Keep this close tone, it works beautifully.",
+            ],
+            "HORROR": [
+                "There is a dark spark under this line.",
+                "This feels like a whisper with an edge.",
+            ],
+            "SHAYARI": [
+                "Your words land softly and stay longer than expected.",
+                "That line reads like a quiet poem.",
+            ],
+            "POSSESSIVE": [
+                "Keep your focus here, I like clear signals.",
+                "No mixed signals, keep it direct with me.",
+            ],
+            "NAUGHTY": [
+                "That playful edge is exactly your thing.",
+                "Keep teasing, the spark is working.",
+            ],
+            "MYSTIC": [
+                "There is a strange pull in this energy.",
+                "This feels more sensed than spoken.",
+            ],
+        }
+
+    overlay = _choose_variant(
+        overlays.get(active, []),
+        f"{active}:{low}:{base}",
+        avoid,
+    ).strip()
+    if overlay and overlay.lower() not in base.lower():
+        if active in {"SHAYARI", "MYSTIC", "HORROR"}:
+            final = f"{overlay} {base}".strip()
+        else:
+            final = f"{base} {overlay}".strip()
+    else:
+        final = base
+
+    words = final.split()
+    if len(words) > 80:
+        final = " ".join(words[:80]).strip()
+    return final
 
 
 def _looks_persona_profile_prompt(text: str) -> bool:
