@@ -248,39 +248,172 @@ def _flirt_lock_reply(
             return "Done. From now on, every line stays poetic and flirty."
         return "Done. From now on, every reply stays flirty with playful tone."
 
+    if active == "SHAYARI" or re.search(r"\b(shayari|shayri|poetry|poetic|ghazal)\b", low):
+        if lang_mode == "hi":
+            return _choose_variant(
+                [
+                    "Teri line me narmi thi, aur dil ne use chupke se rakh liya.",
+                    "Jo tumne kaha, woh lafz nahi the, halki si dhadkan thi.",
+                    "Tum bolte ho to baat khatam nahi hoti, mehek ban ke rehti hai.",
+                    "Teri awaz ka asar ye hai, khamoshi bhi shayari lagti hai.",
+                ],
+                f"flirt-lock:shayari:{low}",
+                avoid,
+            )
+        return _choose_variant(
+            [
+                "Your line was soft, but it stayed longer than expected.",
+                "That did not sound like text, it sounded like a pulse.",
+                "When you speak like this, silence starts feeling poetic.",
+                "Your words arrived quietly and still left a mark.",
+            ],
+            f"flirt-lock:shayari:{low}",
+            avoid,
+        )
+
     if not low:
         if lang_mode == "hi":
-            base = "Tum line drop karo, main usi me spark daal deti hoon."
+            base = _choose_variant(
+                [
+                    "Tum line drop karo, main usi me spark daal deti hoon.",
+                    "Ek choti si line bhejo, main usse flirty bana dungi.",
+                    "Bolo na, main vibe ko seedha playful kar deti hoon.",
+                ],
+                f"flirt-lock:empty:{active}",
+                avoid,
+            )
         else:
-            base = "Drop your line and I will turn it into a flirty spark."
+            base = _choose_variant(
+                [
+                    "Drop your line and I will turn it into a flirty spark.",
+                    "Give me one line and I will make it playful.",
+                    "Send a short line, I will add the spark.",
+                ],
+                f"flirt-lock:empty:{active}",
+                avoid,
+            )
     elif lang_mode == "hi":
         if re.search(r"^\s*(hi|hello|hey|hii|yo)\b", low):
-            base = "Hi, tum aaye ho to chat ka mood khud playful ho gaya."
-        elif re.search(r"\b(kya|kaise|kyu|kyun|kab|kahan|kaun)\b|\?", low):
-            base = (
-                "Sawal tumhara valid hai, par style mera flirty hi rahega. "
-                "Tum pucho, main tease ke saath reply karti rahungi."
+            base = _choose_variant(
+                [
+                    "Hi, tum aaye ho to chat ka mood khud playful ho gaya.",
+                    "Hello, tumhari entry se vibe warm ho gayi.",
+                    "Hey, tum aaye aur scene me spark aa gaya.",
+                ],
+                f"flirt-lock:greet:{low}",
+                avoid,
             )
         elif re.search(r"\b(thanks|thank you|shukriya)\b", low):
-            base = "Thanks ka credit tumhari vibe ko jata hai, tum aise bolo to smile aa jati hai."
+            base = _choose_variant(
+                [
+                    "Thanks ka credit tumhari vibe ko jata hai, tum aise bolo to smile aa jati hai.",
+                    "Shukriya tumhara, par style tumhara hi dil jeet leta hai.",
+                    "Tumhara thanks bhi cute lagta hai, sach me.",
+                ],
+                f"flirt-lock:thanks:{low}",
+                avoid,
+            )
         elif re.search(r"\b(sad|dukhi|akela|alone|lonely|down|upset|mood off)\b", low):
-            base = "Aaj close rahte hain, main yahin hoon. Tum bolte jao, main soft aur warm tone me rahungi."
+            base = _choose_variant(
+                [
+                    "Aaj close rahte hain, main yahin hoon. Tum bolte jao, main soft aur warm tone me rahungi.",
+                    "Aaj ka mood heavy ho to theek, main saath hoon aur vibe gentle rakhenge.",
+                    "Tum akela feel mat karo, main yahin hoon aur line by line saath chalungi.",
+                ],
+                f"flirt-lock:comfort:{low}",
+                avoid,
+            )
+        elif re.search(r"\b(python|javascript|coding|code|bug|error|api|deploy|server|recursion|caching)\b", low):
+            base = _choose_variant(
+                [
+                    f"Tech line bhi tumne style se boli: \"{_compact_line(user_msg, limit=70)}\". Flirt vibe on hi rahegi.",
+                    f"Topic technical hai, par tone tumhari playful hai: \"{_compact_line(user_msg, limit=70)}\".",
+                    f"Tum code bhi bolo to line me spark rehta hai: \"{_compact_line(user_msg, limit=70)}\".",
+                ],
+                f"flirt-lock:tech:{low}",
+                avoid,
+            )
+        elif re.search(r"\b(kya|kaise|kyu|kyun|kab|kahan|kaun)\b|\?", low):
+            base = _choose_variant(
+                [
+                    f"Sawal cute tha: \"{_compact_line(user_msg, limit=70)}\". Jawab bhi flirt vibe me hi aayega.",
+                    f"Line samajh gayi: \"{_compact_line(user_msg, limit=70)}\". Main tease ke saath reply dungi.",
+                    f"Question clear hai: \"{_compact_line(user_msg, limit=70)}\". Style mera playful hi rahega.",
+                ],
+                f"flirt-lock:q:{low}",
+                avoid,
+            )
         else:
-            base = f"Jo tumne abhi bola usi par reply de rahi hoon: \"{_compact_line(user_msg, limit=80)}\"."
+            base = _choose_variant(
+                [
+                    f"Jo tumne abhi bola usi par reply de rahi hoon: \"{_compact_line(user_msg, limit=80)}\".",
+                    f"Current line pakad li: \"{_compact_line(user_msg, limit=80)}\". Flirt vibe active hai.",
+                    f"Is message pe seedha reply: \"{_compact_line(user_msg, limit=80)}\".",
+                ],
+                f"flirt-lock:generic:{low}",
+                avoid,
+            )
     else:
         if re.search(r"^\s*(hi|hello|hey|yo)\b", low):
-            base = "Hi, your entry instantly made this chat warmer and playful."
-        elif re.search(r"\b(what|how|why|when|where|who)\b|\?", low):
-            base = (
-                "Your question is fair, and my tone will stay flirty. "
-                "You ask, I answer with spark."
+            base = _choose_variant(
+                [
+                    "Hi, your entry instantly made this chat warmer and playful.",
+                    "Hello, your timing always adds spark here.",
+                    "Hey, you just made this conversation more interesting.",
+                ],
+                f"flirt-lock:greet-en:{low}",
+                avoid,
             )
         elif re.search(r"\b(thanks|thank you)\b", low):
-            base = "You are welcome, and your soft tone deserves the real credit."
+            base = _choose_variant(
+                [
+                    "You are welcome, and your soft tone deserves the real credit.",
+                    "Anytime, but your tone is the reason this feels good.",
+                    "You are welcome, and that line from you sounded sweet.",
+                ],
+                f"flirt-lock:thanks-en:{low}",
+                avoid,
+            )
         elif re.search(r"\b(sad|alone|lonely|down|upset|mood off)\b", low):
-            base = "Stay close for a bit, I am here. We keep this gentle and warm."
+            base = _choose_variant(
+                [
+                    "Stay close for a bit, I am here. We keep this gentle and warm.",
+                    "If the mood is heavy, we go slower. I am here with you.",
+                    "You are not alone in this line, I am here and listening.",
+                ],
+                f"flirt-lock:comfort-en:{low}",
+                avoid,
+            )
+        elif re.search(r"\b(python|javascript|coding|code|bug|error|api|deploy|server|recursion|caching)\b", low):
+            base = _choose_variant(
+                [
+                    f"Even your technical line has spark: \"{_compact_line(user_msg, limit=70)}\".",
+                    f"Technical topic, playful delivery: \"{_compact_line(user_msg, limit=70)}\".",
+                    f"You can say code and still sound flirty: \"{_compact_line(user_msg, limit=70)}\".",
+                ],
+                f"flirt-lock:tech-en:{low}",
+                avoid,
+            )
+        elif re.search(r"\b(what|how|why|when|where|who)\b|\?", low):
+            base = _choose_variant(
+                [
+                    f"Good question: \"{_compact_line(user_msg, limit=70)}\". The answer stays playful.",
+                    f"I got this line: \"{_compact_line(user_msg, limit=70)}\". I will answer with spark.",
+                    f"That question is clear: \"{_compact_line(user_msg, limit=70)}\". Flirty tone stays on.",
+                ],
+                f"flirt-lock:q-en:{low}",
+                avoid,
+            )
         else:
-            base = f"I heard your current line clearly: \"{_compact_line(user_msg, limit=80)}\"."
+            base = _choose_variant(
+                [
+                    f"I heard your current line clearly: \"{_compact_line(user_msg, limit=80)}\".",
+                    f"Replying to this exact line: \"{_compact_line(user_msg, limit=80)}\".",
+                    f"Current message received: \"{_compact_line(user_msg, limit=80)}\".",
+                ],
+                f"flirt-lock:generic-en:{low}",
+                avoid,
+            )
 
     if lang_mode == "hi":
         overlays: dict[str, list[str]] = {
@@ -349,6 +482,28 @@ def _flirt_lock_reply(
             final = f"{base} {overlay}".strip()
     else:
         final = base
+
+    if avoid and final.strip().lower() == (avoid or "").strip().lower():
+        if lang_mode == "hi":
+            final = _choose_variant(
+                [
+                    f"Same line repeat nahi karungi. Is baar tumhari baat: \"{_compact_line(user_msg, limit=70)}\" pe fresh flirt reply.",
+                    f"Repeat skip. Tumhari current line \"{_compact_line(user_msg, limit=70)}\" pe naya spark.",
+                    f"Same reply nahi, nayi vibe: \"{_compact_line(user_msg, limit=70)}\".",
+                ],
+                f"flirt-lock:no-repeat:{active}:{low}",
+                "",
+            )
+        else:
+            final = _choose_variant(
+                [
+                    f"No repeat. Fresh flirty reply for your current line: \"{_compact_line(user_msg, limit=70)}\".",
+                    f"Skipping repeat. New spark for: \"{_compact_line(user_msg, limit=70)}\".",
+                    f"Not repeating that one. Fresh playful take on: \"{_compact_line(user_msg, limit=70)}\".",
+                ],
+                f"flirt-lock:no-repeat-en:{active}:{low}",
+                "",
+            )
 
     words = final.split()
     if len(words) > 80:
@@ -581,7 +736,7 @@ def _looks_hindi_intent(text: str) -> bool:
                 r"\b(bhai|bro|brother|yar|yaar|kaise|kya|nahi|nhi|haan|achha|acha|"
                 r"tum|tumhe|mujhe|meri|mera|mere|hai|ho|karna|krna|kuch|batao|"
                 r"baat|bat|sikha|sikhao|sikha do|thik|theek|thick|hindi|"
-                r"hoon|raha|rahi|rahe|karu|karo|chahiye|gaya|gayi|bolo|sunao|"
+                r"hoon|hu|hun|raha|rahi|rahe|karu|karo|chahiye|gaya|gayi|bolo|sunao|"
                 r"ladki|impress|sarcasm|yaad|samajh)\b"
             ),
             low,
@@ -598,7 +753,7 @@ def _hindi_marker_hits(text: str) -> int:
                 r"krna|karna|samjha|chalo|sawal|jawab|main|mujhe|mera|mere|apna|karo|"
                 r"bilkul|madad|bolo|pucho|samasya|karunga|karungi|seedha|rahe|ho|"
                 r"yar|yaar|kuch|batao|bat|baat|sikha|sikhao|thik|thick|"
-                r"hoon|raha|rahi|karu|gaya|gayi|chahiye|sunao|ladki|impress|yaad|samajh)\b"
+                r"hoon|hu|hun|raha|rahi|karu|gaya|gayi|chahiye|sunao|ladki|impress|yaad|samajh)\b"
             ),
             low,
         )
