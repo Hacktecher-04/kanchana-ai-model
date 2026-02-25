@@ -176,15 +176,21 @@ def _resolve_flirt_lock_state(
     msg: str,
     history: list[HistoryMessage],
 ) -> tuple[bool, str]:
+    msg_mode = _extract_mode_token(msg)
+    if msg_mode == "CHILL":
+        return False, "CHILL"
     if _is_flirt_lock_disable(msg):
         return False, "CHILL"
     if _is_flirt_lock_enable(msg):
         return True, _flirt_lock_mode(msg)
 
-    for item in reversed(history[-30:]):
+    for item in reversed(history):
         if item.role != "user":
             continue
         txt = item.content
+        hist_mode = _extract_mode_token(txt)
+        if hist_mode == "CHILL":
+            return False, "CHILL"
         if _is_flirt_lock_disable(txt):
             return False, "CHILL"
         if _is_flirt_lock_enable(txt):
